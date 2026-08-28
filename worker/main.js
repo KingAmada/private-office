@@ -1,6 +1,7 @@
 import core from './index.js';
 import { classify } from './ai.js';
 import { ensure, auth, role, message } from './db.js';
+import { initMultipart, uploadMultipartPart, completeMultipart, abortMultipart } from './multipart.js';
 
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), {
   status,
@@ -25,7 +26,7 @@ function cors(req, env) {
   return {
     'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : allowed[0] || 'null',
     'Access-Control-Allow-Headers': 'authorization,content-type',
-    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
     'Access-Control-Expose-Headers': 'Content-Disposition,Content-Type,Content-Length,X-File-Name',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'
@@ -165,8 +166,8 @@ async function organize(req, env, user) {
     try {
       let row = { ...original };
       const needsAI = !Number(row.ai_used || 0);
-      const shouldDeep = deep && report.ai_reads < aiLimit;
-      if ((needsAI || shouldDeep) && report.ai_reads < aiLimit) {
+      const shouldDeep = deep && Number(row.size || 0) < 50 * 1024 * 1024 && report.ai_reads < aiLimit;
+      if ((needsAI || shouldDeep) && Number(row.size || 0) < 50 * 1024 * 1024 && report.ai_reads < aiLimit) {
         const beforeName = row.stored_name, beforeFolder = folderPath(row);
         row = await reclassify(env, row);
         report.ai_reads++; report.reclassified++;
@@ -193,6 +194,30 @@ export default {
     try {
       await ensure(env);
       const url = new URL(req.url), path = url.pathname;
+
+      if (req.method === 'POST' && path === '/api/uploads/init') {
+        const user = await auth(req, env);
+        if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
+        return wrap(await initMultipart(req, env, user), req, env);
+      }
+      const partMatch = path.match(/^\/api\/uploads\/([^/]+)\/parts\/(\d+)$/);
+      if (req.method === 'PUT' && partMatch) {
+        const user = await auth(req, env);
+        if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
+        return wrap(await uploadMultipartPart(req, env, user, decodeURIComponent(partMatch[1]), partMatch[2]), req, env);
+      }
+      const completeMatch = path.match(/^\/api\/uploads\/([^/]+)\/complete$/);
+      if (req.method === 'POST' && completeMatch) {
+        const user = await auth(req, env);
+        if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
+        return wrap(await completeMultipart(req, env, user, decodeURIComponent(completeMatch[1])), req, env);
+      }
+      const uploadMatch = path.match(/^\/api\/uploads\/([^/]+)$/);
+      if (req.method === 'DELETE' && uploadMatch) {
+        const user = await auth(req, env);
+        if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
+        return wrap(await abortMultipart(env, user, decodeURIComponent(uploadMatch[1])), req, env);
+      }
 
       if (req.method === 'DELETE' && path.startsWith('/api/files/')) {
         const user = await auth(req, env);
