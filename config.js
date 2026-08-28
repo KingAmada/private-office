@@ -3,3 +3,9 @@ window.PRIVATE_OFFICE_CONFIG = {
   APP_NAME: 'Private Office',
   MAX_UPLOAD_MB: 12
 };
+
+window.addEventListener('DOMContentLoaded', () => {
+  const s = document.createElement('script');
+  s.src = './file-controls.js?v=1';
+  document.body.appendChild(s);
+});
