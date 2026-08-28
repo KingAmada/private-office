@@ -1,8 +1,9 @@
 const OPENAI='https://api.openai.com/v1';
 let jwksCache={at:0,keys:[]};
-function allowedOrigins(env){return String(env.APP_ORIGINS||'').split(',').map(x=>x.trim()).filter(Boolean)}
-function originAllowed(origin,env){return allowedOrigins(env).includes(origin)}
-function cors(origin,env){const ok=originAllowed(origin,env);return {'Access-Control-Allow-Origin':ok?origin:'null','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'POST,OPTIONS','Vary':'Origin','Content-Type':'application/json'} }
+function normalizeOrigin(value){try{return new URL(String(value||'').trim()).origin}catch{return String(value||'').trim().replace(/\/$/,'')}}
+function allowedOrigins(env){return String(env.APP_ORIGINS||'').split(',').map(normalizeOrigin).filter(Boolean)}
+function originAllowed(origin,env){return allowedOrigins(env).includes(normalizeOrigin(origin))}
+function cors(origin,env){const clean=normalizeOrigin(origin),ok=originAllowed(clean,env);return {'Access-Control-Allow-Origin':ok?clean:'null','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Max-Age':'86400','Vary':'Origin','Content-Type':'application/json'} }
 function json(data,status,origin,env){return new Response(JSON.stringify(data),{status,headers:cors(origin,env)})}
 function b64url(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
 function parseJwt(t){const [h,p,s]=t.split('.');if(!h||!p||!s)throw new Error('Malformed identity token');return {header:JSON.parse(new TextDecoder().decode(b64url(h))),payload:JSON.parse(new TextDecoder().decode(b64url(p))),sig:b64url(s),data:new TextEncoder().encode(`${h}.${p}`)}}
