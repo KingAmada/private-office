@@ -6,6 +6,6 @@ window.PRIVATE_OFFICE_CONFIG = {
 
 window.addEventListener('DOMContentLoaded', () => {
   const s = document.createElement('script');
-  s.src = './file-controls.js?v=1';
+  s.src = './file-controls.js?v=2';
   document.body.appendChild(s);
 });
