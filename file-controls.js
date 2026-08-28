@@ -1,45 +1,13 @@
 (() => {
 'use strict';
-const API = String(window.PRIVATE_OFFICE_CONFIG?.API_URL || '').replace(/\/$/, '');
-const SESSION_KEY = 'private_office_session_v1';
-const $ = s => document.querySelector(s);
-
-function owner(){ return String($('#profileRole')?.textContent || '').trim().toLowerCase() === 'owner'; }
-function toast(text){ const t=$('#toast'); if(!t)return; t.textContent=text; t.classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>t.classList.remove('show'),3200); }
-
-async function remove(fileId, button){
-  const card = button.closest('.fileCard,.listItem');
-  const name = card?.querySelector('b')?.textContent?.trim() || 'this file';
-  if(!confirm(`Delete “${name}” permanently from Private Office?\n\nThis removes the original file from storage.`)) return;
-  const old=button.textContent; button.textContent='Deleting…'; button.disabled=true;
-  try{
-    const token=localStorage.getItem(SESSION_KEY)||'';
-    const r=await fetch(`${API}/api/files/${encodeURIComponent(fileId)}`,{method:'DELETE',headers:{Authorization:`Bearer ${token}`}});
-    let d={}; try{d=await r.json()}catch{}
-    if(!r.ok) throw new Error(d.error||'Could not delete file');
-    toast('File deleted');
-    $('#refreshFeed')?.click();
-    const search=$('#librarySearch');
-    if(search && !$('#libraryModal')?.classList.contains('hidden')) search.dispatchEvent(new Event('input',{bubbles:true}));
-  }catch(e){ toast(e.message); button.textContent=old; button.disabled=false; }
-}
-
-function enhance(){
-  if(!owner()) return;
-  document.querySelectorAll('.fileActions').forEach(actions=>{
-    if(actions.querySelector('.deleteFile')) return;
-    const source=actions.querySelector('.openFile,.retryFile');
-    const id=source?.dataset.fileId;
-    if(!id) return;
-    const b=document.createElement('button');
-    b.className='deleteFile'; b.dataset.fileId=id; b.textContent='Delete';
-    b.style.color='#9d2c2c';
-    b.onclick=()=>remove(id,b);
-    actions.prepend(b);
-  });
-}
-
-new MutationObserver(enhance).observe(document.documentElement,{subtree:true,childList:true,characterData:true});
-setInterval(enhance,1200);
-enhance();
+const API=String(window.PRIVATE_OFFICE_CONFIG?.API_URL||'').replace(/\/$/,'');
+const SESSION_KEY='private_office_session_v1';
+const $=s=>document.querySelector(s);
+function owner(){return String($('#profileRole')?.textContent||'').trim().toLowerCase()==='owner'}
+function toast(text){const t=$('#toast');if(!t)return;t.textContent=text;t.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>t.classList.remove('show'),3200)}
+function modal(title,body,action,onGo){let m=$('#fileControlConfirm');if(!m){m=document.createElement('div');m.id='fileControlConfirm';m.className='wsConfirm hidden';document.body.appendChild(m)}m.classList.remove('hidden');m.innerHTML=`<div class="wsConfirmCard"><div class="wsConfirmIcon">!</div><h4>${title}</h4><p>${body}</p><div><button id="fcCancel" class="wsButton">Cancel</button><button id="fcGo" class="wsButton wsDanger">${action}</button></div></div>`;$('#fcCancel').onclick=()=>m.classList.add('hidden');$('#fcGo').onclick=onGo;m.onclick=e=>{if(e.target===m)m.classList.add('hidden')}}
+async function remove(fileId,button){const card=button.closest('.fileCard,.listItem'),name=card?.querySelector('b')?.textContent?.trim()||'this file';modal('Delete file',`Permanently remove “${name}” from Private Office and R2 storage?`,'Delete permanently',async()=>{const m=$('#fileControlConfirm');m?.classList.add('hidden');const old=button.textContent;button.textContent='Deleting…';button.disabled=true;try{const r=await fetch(`${API}/api/files/${encodeURIComponent(fileId)}`,{method:'DELETE',headers:{Authorization:`Bearer ${localStorage.getItem(SESSION_KEY)||''}`}});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||'Could not delete file');toast('File deleted');$('#refreshFeed')?.click();window.PrivateOfficeWorkspace?.refresh?.()}catch(e){toast(e.message);button.textContent=old;button.disabled=false}})}
+async function download(fileId,button){const card=button.closest('.fileCard,.listItem'),shownName=card?.querySelector('b')?.textContent?.trim()||'Document',old=button.textContent;button.textContent='Getting…';button.disabled=true;try{const r=await fetch(`${API}/api/files/${encodeURIComponent(fileId)}`,{headers:{Authorization:`Bearer ${localStorage.getItem(SESSION_KEY)||''}`}});if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.error||'Could not retrieve file')}const blob=await r.blob(),cd=r.headers.get('content-disposition')||'';let name=shownName;const match=cd.match(/filename\*=UTF-8''([^;]+)/i);if(match){try{name=decodeURIComponent(match[1])}catch{}}const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),30000)}catch(e){toast(e.message)}finally{button.textContent=old;button.disabled=false}}
+function enhance(){document.querySelectorAll('.openFile').forEach(b=>{if(b.dataset.poDownload==='1')return;b.dataset.poDownload='1';b.textContent='Download';b.onclick=e=>{e.preventDefault();e.stopImmediatePropagation();download(b.dataset.fileId,b)}});if(!owner())return;document.querySelectorAll('.fileActions').forEach(actions=>{if(actions.querySelector('.deleteFile'))return;const source=actions.querySelector('.openFile,.retryFile'),id=source?.dataset.fileId;if(!id)return;const b=document.createElement('button');b.className='deleteFile';b.dataset.fileId=id;b.textContent='Delete';b.style.color='#9d2c2c';b.onclick=()=>remove(id,b);actions.prepend(b)})}
+new MutationObserver(enhance).observe(document.documentElement,{subtree:true,childList:true,characterData:true});setInterval(enhance,1200);enhance();
 })();
