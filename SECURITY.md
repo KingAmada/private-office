@@ -1,33 +1,25 @@
-# Security boundaries
+# Private Office Security Model
 
-Private Office is designed around separation of concerns.
+Private Office is intentionally Drive-first and static-first.
 
-## Never exposed to browser source
-- OpenAI API key
-- Google OAuth client secret
-- Google OAuth refresh tokens
-- Application encryption key
+## Secrets
 
-## Stored in Google Drive
-- Original uploaded documents
-- Existing user documents remain where they already are
+The public GitHub Pages code may contain only public configuration such as a Google OAuth Web Client ID and the AI gateway URL. It must never contain the OpenAI API key, a Google client secret, vault master password, Drive access token or Google ID token.
 
-## Stored in the local database
-- Document metadata and AI-generated safe search text
-- Embeddings
-- Entity relationships
-- Encrypted OAuth session token bundle
-- Encrypted password-vault ciphertext
+The OpenAI key lives only as an encrypted secret in the serverless gateway environment.
 
-## Not intentionally indexed
-- Passwords found inside uploaded documents
-- OTPs
-- CVVs
-- Card or transaction PINs
-- Crypto seed/recovery phrases
-- Private keys
+## Google Drive
 
-## Trust assumptions
-The machine or server hosting the Node process can access decrypted document metadata during normal operation. Protect that host with full-disk encryption, OS updates, least-privilege accounts, firewalling and secure backups.
+Drive access tokens are held in browser memory. Private Office requests read-only access to existing Drive content plus `drive.file` write access for app-created/explicitly opened files. Existing files are not automatically moved.
 
-A public/commercial release should add CSRF defenses, malware scanning, audit logs, passkeys/WebAuthn, stronger multi-user authorization boundaries and a formal security review.
+Private Office persists its index in an app-created Drive JSON file so the catalog follows the user's Google account without an application database.
+
+## AI boundary
+
+The serverless gateway verifies the signed Google identity token and optionally checks the account against `ALLOWED_EMAILS`. Document copies sent for AI classification are temporary. Password-vault data is never sent to the AI gateway.
+
+## Vault
+
+The vault is encrypted before upload using AES-256-GCM with a key derived in-browser from the user's master password using PBKDF2-SHA-256. The master password and derived key are not persisted by the app.
+
+Do not store one-time codes, CVVs, crypto seed phrases, recovery phrases or private keys in Private Office.
