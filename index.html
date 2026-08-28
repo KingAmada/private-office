@@ -1,96 +1,56 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f7f7f4">
-  <meta name="description" content="Private Office — your documents, properties, companies and credentials, remembered.">
-  <title>Private Office</title>
-  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="theme-color" content="#f7f6f1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Private Office">
+<meta name="description" content="Private Office — everything, remembered.">
+<title>Private Office</title>
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-<div id="login" class="login">
-  <div class="loginCard">
+<section id="access" class="accessScreen">
+  <div class="accessCard">
     <div class="seal">PO</div>
     <div class="kicker">PRIVATE OFFICE</div>
     <h1>Everything,<br>remembered.</h1>
-    <p>Your private AI office for documents, properties, companies and records — stored in your own Google Drive.</p>
-    <div id="googleButton" class="googleMount"></div>
-    <button id="manualConnect" class="primary hidden">Connect Google Drive</button>
-    <div id="loginNote" class="loginNote">Nothing is uploaded to this website. Google Drive remains the source of truth.</div>
-    <div id="configWarning" class="warning hidden">Configuration required. Open <b>config.js</b> and add your Google OAuth Client ID and AI gateway URL.</div>
+    <p id="accessText">Open your private invitation link to enter Private Office.</p>
+    <div id="inviteLoading" class="loading hidden">Opening your private office…</div>
+    <button id="ownerSetupToggle" class="textButton">Set up owner access</button>
+    <form id="ownerSetup" class="setupForm hidden">
+      <input id="setupName" autocomplete="name" placeholder="Your name" value="Ali">
+      <input id="setupKey" type="password" autocomplete="off" placeholder="One-time setup key">
+      <button class="primary" type="submit">Create my Private Office</button>
+      <small>This is used only once to create the first owner session.</small>
+    </form>
+    <div id="accessError" class="error hidden"></div>
   </div>
-</div>
+</section>
 <div id="app" class="app hidden">
-  <aside class="sidebar">
+  <header class="appHeader">
     <div class="brand"><div class="brandMark">PO</div><div><b>Private Office</b><span>Everything, remembered.</span></div></div>
-    <nav>
-      <button class="active" data-view="home"><i>⌂</i>Home</button>
-      <button data-action="focus-chat"><i>✦</i>Ask Private Office</button>
-      <button data-action="upload"><i>＋</i>Add anything</button>
-      <button data-action="library"><i>▤</i>Library</button>
-      <button data-action="review"><i>!</i>Needs review</button>
-      <button data-action="vault"><i>◇</i>Private Vault</button>
-      <button data-action="sync"><i>↻</i>Organize Drive</button>
-    </nav>
-    <div class="sidebarFoot">
-      <div class="driveState"><span id="driveDot" class="dot"></span><div><b id="driveLabel">Google Drive</b><small id="driveSub">Not connected</small></div></div>
-      <div class="person"><img id="avatar" alt=""><div><b id="userName">—</b><small id="userEmail">—</small></div></div>
-      <button id="disconnect" class="ghost full">Disconnect</button>
-    </div>
-  </aside>
-  <main class="main">
-    <header class="topbar"><div><b>Private Office</b><span id="syncState">Drive-first private memory</span></div><div class="topActions"><button class="ghost" data-action="sync">Organize Drive</button><button class="primary" data-action="upload">+ Add anything</button></div></header>
-    <div class="layout">
-      <section class="content">
-        <div class="hero"><div class="eyebrow">YOUR PRIVATE CHIEF OF STAFF</div><h1 id="greeting">What do you need?</h1><p>Don't remember where it is. Just remember what you want.</p></div>
-        <div class="stats"><article><span>Documents</span><strong id="statDocs">0</strong><small>remembered</small></article><article><span>Properties</span><strong id="statProperties">0</strong><small>linked</small></article><article><span>Companies</span><strong id="statCompanies">0</strong><small>linked</small></article><article><span>Needs review</span><strong id="statReview">0</strong><small>attention</small></article></div>
-        <section class="chatCard" id="chatCard">
-          <div class="chatHead"><div class="assistantId"><div class="assistantOrb">AI</div><div><b>Private Office</b><small id="aiStatus">Drive connected · AI ready</small></div></div><span class="live">PRIVATE</span></div>
-          <div id="chatLog" class="chatLog"><div class="message ai"><div class="bubble">Ask naturally. “Find the Maitama C of O”, “Which properties need documents?”, or “Show me everything connected to ABC Holdings.”</div></div></div>
-          <div class="composer"><textarea id="prompt" rows="2" placeholder="Ask anything about your records…"></textarea><div class="composerFoot"><button class="round" data-action="upload" title="Add document">＋</button><button id="send" class="send">↑</button></div></div>
-        </section>
-        <div class="suggestions"><button>Show properties with incomplete documents</button><button>Find my most recent agreements</button><button>What expires soon?</button><button>Show everything under my companies</button></div>
-      </section>
-      <aside class="rightbar"><div class="sectionHead"><b>Needs attention</b><button data-action="review">View all</button></div><div id="attention"></div><div class="sectionHead gap"><b>Recently remembered</b><button data-action="library">Library</button></div><div id="recent" class="recent"></div><div class="sectionHead gap"><b>Categories</b></div><div id="categories" class="categories"></div></aside>
-    </div>
+    <button id="profileButton" class="profileButton"><span id="profileInitial">A</span><div><b id="profileName">—</b><small id="profileRole">—</small></div></button>
+  </header>
+  <main class="shell">
+    <section class="hero"><div class="eyebrow">YOUR PRIVATE CHIEF OF STAFF</div><h1 id="greeting">What do you need?</h1><p>Send a thought, photo or document. Private Office will remember it.</p></section>
+    <section class="quickRow"><button data-quick="Find my most recent documents">Recent documents</button><button data-quick="What do I have about property?">Property</button><button data-quick="What was added today?">Added today</button><button data-quick="Show me what needs my attention">Needs attention</button></section>
+    <section class="chatCard"><div class="chatTop"><div><b>Office memory</b><span id="memoryStatus">Private and ready</span></div><button id="refreshFeed" class="iconButton" title="Refresh">↻</button></div><div id="feed" class="feed"></div></section>
   </main>
+  <div id="attachmentPreview" class="attachmentPreview hidden"><div><span>📎</span><div><b id="attachmentName"></b><small id="attachmentSize"></small></div></div><button id="clearAttachment">×</button></div>
+  <div class="composerDock"><div class="composer"><button id="attachButton" class="attachButton" title="Attach file">＋</button><textarea id="messageInput" rows="1" placeholder="Ask, tell me, or attach anything…"></textarea><button id="sendButton" class="sendButton">↑</button></div></div>
+  <input id="fileInput" type="file" hidden>
+  <nav class="bottomNav"><button class="active" data-nav="home"><span>⌂</span><small>Home</small></button><button data-nav="memory"><span>◫</span><small>Files</small></button><button id="navAdd" class="navAdd"><span>＋</span><small>Add</small></button><button id="peopleNav" data-nav="people"><span>♙</span><small>People</small></button><button data-nav="me"><span>○</span><small>Me</small></button></nav>
 </div>
-<input id="fileInput" type="file" multiple hidden>
-<div id="uploadModal" class="overlay hidden"><div class="modal wide"><div class="modalHead"><div><h2>Add anything</h2><p>Drop it. Private Office will understand, rename, file and remember it.</p></div><button class="x" data-close="uploadModal">×</button></div><div class="modalBody"><div id="dropZone" class="dropZone"><div class="dropIcon">＋</div><b>Drop documents here</b><span>PDF, images, Word, text and common office files</span><button id="chooseFiles" class="ghost">Choose files</button></div><div id="uploadQueue" class="queue"></div></div><div class="modalFoot"><small>Originals stay in your Google Drive. Unchanged files are not sent to AI again.</small><button id="uploadNow" class="primary" disabled>Upload & remember</button></div></div></div>
-<div id="libraryModal" class="overlay hidden"><div class="modal wide"><div class="modalHead"><div><h2 id="libraryTitle">Library</h2><p>Your intelligent index. The originals remain in Google Drive.</p></div><button class="x" data-close="libraryModal">×</button></div><div class="modalBody"><input id="librarySearch" class="search" placeholder="Search documents, properties, companies, people…"><div id="libraryList" class="libraryList"></div></div></div></div>
-<div id="vaultModal" class="overlay hidden"><div class="modal wide"><div class="modalHead"><div><h2>Private Vault</h2><p>Encrypted in your browser before it ever reaches Drive. Never sent to AI.</p></div><button class="x" data-close="vaultModal">×</button></div><div class="modalBody vaultGrid"><section class="panel"><h3>Unlock vault</h3><label>Master password</label><input id="vaultMaster" type="password" autocomplete="current-password" placeholder="Master password"><div class="buttonRow"><button id="vaultUnlock" class="primary">Unlock</button><button id="vaultCreate" class="ghost">Create new vault</button></div><div id="vaultState" class="micro"></div></section><section class="panel"><h3>Add credential</h3><label>Label</label><input id="vaultLabel" placeholder="Netflix / Work email"><label>Username</label><input id="vaultUsername" placeholder="Optional"><label>Password</label><input id="vaultPassword" type="password" autocomplete="new-password"><label>Website / note</label><input id="vaultUrl" placeholder="Optional"><button id="vaultSave" class="primary full">Encrypt & save</button></section><section class="panel span2"><div class="sectionHead"><b>Stored credentials</b><button id="vaultLock">Lock</button></div><div id="vaultItems"></div></section></div></div></div>
+<div id="libraryModal" class="overlay hidden"><section class="sheet"><div class="sheetHandle"></div><div class="sheetHead"><div><h2>Memory Files</h2><p>Originals are stored privately in R2.</p></div><button data-close="libraryModal">×</button></div><div class="sheetBody"><input id="librarySearch" class="search" placeholder="Search files, people, properties, companies…"><div id="libraryList" class="list"></div></div></section></div>
+<div id="peopleModal" class="overlay hidden"><section class="sheet"><div class="sheetHandle"></div><div class="sheetHead"><div><h2>People & Access</h2><p>Create a private link. Revoke it anytime.</p></div><button data-close="peopleModal">×</button></div><div class="sheetBody"><form id="inviteForm" class="inviteForm"><input id="inviteName" placeholder="Name, e.g. Office Secretary" required><select id="inviteRole"><option value="staff">Staff — upload & own messages</option><option value="assistant">Assistant — full office memory</option></select><button class="primary" type="submit">Create private link</button></form><div id="newInvite" class="newInvite hidden"><label>Private link</label><div class="copyRow"><input id="inviteUrl" readonly><button id="copyInvite">Copy</button></div><small>Send this link only to the intended person.</small></div><div id="peopleList" class="list"></div></div></section></div>
+<div id="profileModal" class="overlay hidden"><section class="sheet compactSheet"><div class="sheetHandle"></div><div class="sheetHead"><div><h2 id="profileModalName">Private Office</h2><p id="profileModalRole"></p></div><button data-close="profileModal">×</button></div><div class="sheetBody"><div class="privacyCard"><b>Private session</b><p>This device stays signed in until you sign out or the owner revokes access.</p></div><button id="logoutButton" class="danger full">Sign out this device</button></div></section></div>
 <div id="toast" class="toast"></div>
-<script src="config.js"></script>
-<script>
-  window.__poEnableGooglePatches = function () {
-    if (!window.google?.accounts) return;
-
-    if (google.accounts.id?.initialize && !google.accounts.id.__privateOfficeFedCMPatched) {
-      const originalInitialize = google.accounts.id.initialize.bind(google.accounts.id);
-      google.accounts.id.initialize = function (options) {
-        return originalInitialize({ ...options, use_fedcm_for_button: true });
-      };
-      google.accounts.id.__privateOfficeFedCMPatched = true;
-    }
-
-    if (google.accounts.oauth2?.initTokenClient && !google.accounts.oauth2.__privateOfficeDrivePatched) {
-      const originalTokenClient = google.accounts.oauth2.initTokenClient.bind(google.accounts.oauth2);
-      google.accounts.oauth2.initTokenClient = function (options) {
-        const scopes = new Set(String(options?.scope || '').split(/\s+/).filter(Boolean));
-        scopes.delete('https://www.googleapis.com/auth/drive.readonly');
-        scopes.delete('https://www.googleapis.com/auth/drive.file');
-        scopes.add('https://www.googleapis.com/auth/drive');
-        return originalTokenClient({ ...options, scope: [...scopes].join(' ') });
-      };
-      google.accounts.oauth2.__privateOfficeDrivePatched = true;
-    }
-  };
-</script>
-<script src="https://accounts.google.com/gsi/client" async defer onload="window.__poEnableGooglePatches && window.__poEnableGooglePatches()"></script>
-<script src="app.js"></script>
-<script src="organizer.js"></script>
+<script src="./config.js"></script>
+<script src="./app.js"></script>
 </body>
 </html>
