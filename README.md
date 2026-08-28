@@ -2,162 +2,86 @@
 
 **Everything, remembered.**
 
-Private Office is a white-theme, chat-first personal document and asset assistant designed to run as a **static GitHub Pages app**.
+Private Office is a mobile-first shared personal-office memory. Trusted people can open a private invitation link, send a message, upload a document/photo, and leave. Private Office remembers the conversation and the original file so the owner can retrieve it conversationally later.
 
-There is **no Node/Express backend and no application database server**.
+There is **no Google sign-in, no Google Drive dependency, no Node server, and no database server to maintain**.
 
 ## Architecture
 
 ```text
-GitHub Pages (HTML/CSS/JS)
-        |
-        +---- Google Identity Services
-        |          |
-        |          +---- Google Drive API (directly from browser)
-        |                   |
-        |                   +---- Private Office / Inbox
-        |                   +---- Private Office / Properties
-        |                   +---- Private Office / Companies
-        |                   +---- Private Office / .system/private-office-index.json
-        |                   +---- Private Office / .system/private-office-vault.enc.json
-        |
-        +---- Serverless AI Gateway
-                   |
-                   +---- OpenAI Responses API
+GitHub Pages PWA
+      |
+      +---- private invitation / remembered device session
+      |
+Cloudflare Worker
+      |
+      +---- D1: people, sessions, invitations, messages, file memory
+      +---- R2: original private files
+      +---- OpenAI: one-time document understanding + concise answers
 ```
 
-Google Drive is both the **document store and persistent Private Office memory**. New uploads go to Drive first. The browser sends a temporary copy to the AI gateway for classification, then files created by Private Office can be moved into the correct Drive folder. Existing Drive files are indexed without being rearranged.
+## Access model
 
-The AI gateway exists for one reason: **an OpenAI API key must never be put into browser-side code**. It can be a Cloudflare Worker or another serverless edge function. The repository includes a Worker implementation in `worker/index.js`.
+- **Owner** — full memory, files, chat, People & Access, revoke access.
+- **Assistant** — full office memory and file/chat access, but cannot manage people.
+- **Staff** — can upload/send messages and access their own submissions/replies.
 
-## Files
+The owner creates a separate private link for each trusted person. On first use the link is exchanged for a 90-day revocable device session stored in that browser. The invitation token is removed from the visible URL after acceptance.
 
-- `index.html` — application shell
-- `styles.css` — white luxury interface
-- `app.js` — Google login, Drive organization, local retrieval, encrypted vault and UI
-- `config.js` — public runtime configuration (Google client ID + AI gateway URL only)
-- `worker/index.js` — tiny serverless OpenAI gateway; no Node server
-- `manifest.webmanifest` + `sw.js` — installable PWA shell
+## Storage
 
-## 1. Google Cloud setup
+- R2 binding: `FILES` → bucket `private-office`
+- D1 binding: `DB` → database `private-office-db`
+- R2 public access should remain **disabled**. Files are returned only through the authenticated Worker.
 
-Create a Google Cloud project and enable the **Google Drive API**.
+D1 tables are created automatically by the Worker on first request.
 
-Create an **OAuth 2.0 Client ID** for a Web application. Add your GitHub Pages origin, for example:
+## Required Cloudflare secret
 
-```text
-https://kingamada.github.io
-```
-
-If you later use a custom domain, add that HTTPS origin too.
-
-Private Office requests these user scopes in the browser:
-
-- `openid email profile`
-- `https://www.googleapis.com/auth/drive.readonly`
-- `https://www.googleapis.com/auth/drive.file`
-
-This intentionally gives read access to existing Drive files while limiting write access to app-created/explicitly opened files.
-
-Put the public OAuth Client ID into `config.js`:
-
-```js
-GOOGLE_CLIENT_ID: '123456789-abc.apps.googleusercontent.com'
-```
-
-OAuth client IDs are public identifiers. **Do not put a Google client secret in this repo or in the browser.**
-
-## 2. Deploy the AI gateway
-
-The included `worker/index.js` is written for a serverless Web/Worker runtime and does not require Express or a Node server.
-
-Create a Worker and add these encrypted environment variables/secrets in the provider dashboard:
+Keep these only in **Worker Runtime Variables and Secrets**:
 
 ```text
 OPENAI_API_KEY=...
-GOOGLE_CLIENT_ID=the_same_google_oauth_client_id
-ALLOWED_EMAILS=brother@example.com
-APP_ORIGINS=https://kingamada.github.io
-OPENAI_MODEL=gpt-5.6-luna
+SETUP_KEY=one-long-random-one-time-owner-setup-key
 ```
 
-`ALLOWED_EMAILS` can contain multiple comma-separated Google addresses. This is strongly recommended because it prevents another Google user from using your AI gateway even if they discover its URL.
+`SETUP_KEY` is only needed to bootstrap the first owner. Do not commit it to GitHub.
 
-The Worker verifies the Google ID token cryptographically against Google's signing keys before it calls OpenAI.
+The non-secret deployment config is in `wrangler.jsonc` and includes the R2/D1 bindings, app origin, app URL and OpenAI model.
 
-Then put the Worker URL in `config.js`:
+## First owner setup
 
-```js
-AI_GATEWAY_URL: 'https://private-office-ai.example.workers.dev'
-```
+1. Deploy the latest `main` commit to the Cloudflare Worker.
+2. Add `SETUP_KEY` as a **runtime Secret**.
+3. Open `https://kingamada.github.io/private-office/`.
+4. Choose **Set up owner access**.
+5. Enter your name and the one-time setup key.
+6. Private Office creates the owner and stores a revocable device session locally.
 
-## 3. GitHub Pages
+After the owner exists, the setup endpoint refuses to create another owner.
 
-The application is static and lives at the repository root. In the repository:
+## Sharing access
 
-1. Open **Settings → Pages**.
-2. Under **Build and deployment**, choose **Deploy from a branch**.
-3. Choose branch **main** and folder **/(root)**, then save.
+As owner, open **People** → enter the person's name → choose `Staff` or `Assistant` → **Create private link** → Copy.
 
-For this repository the expected URL will normally be:
+The recipient simply opens the link. No Google account or sign-in is required.
 
-```text
-https://kingamada.github.io/private-office/
-```
+## Memory behavior
 
-If that is the final URL, the Google OAuth **Authorized JavaScript origin** is still:
+- A text note is stored directly in D1 without an AI call.
+- A question searches stored office memory and sends only a small relevant context to OpenAI.
+- A new file is hashed, stored in R2, read by AI once for compact classification/summary/filename, then remembered in D1.
+- Uploading the exact same file again reuses the existing file memory and avoids another document-AI read.
+- OpenAI file copies are temporary and deleted after classification.
 
-```text
-https://kingamada.github.io
-```
+## Files
 
-and the Worker `APP_ORIGINS` value should use the same origin.
-
-## What happens when a file is uploaded
-
-1. Browser uploads the original directly to `Private Office / Inbox` in the user's Google Drive.
-2. A temporary file copy is sent to the serverless AI gateway.
-3. The gateway sends that temporary copy to OpenAI for classification and deletes the OpenAI file after the request.
-4. Private Office extracts document type, category, useful dates, entity relationships and searchable summary.
-5. High-confidence new uploads are moved into the relevant app-created Drive folder.
-6. Low-confidence or prohibited-sensitive classifications stay in Inbox / Needs Review.
-7. The structured record is written into `.system/private-office-index.json` in Drive.
-
-## Existing Drive
-
-**Index Drive** reads a small batch of supported existing files, classifies them and adds them to the Drive-based index. It does **not** move existing files.
-
-Supported existing-file scanning currently includes common uploaded files plus Google Docs, Sheets and Slides through Drive export. Very large or unsupported files are skipped rather than guessed.
-
-## Private Vault
-
-Passwords never go through OpenAI.
-
-The vault is encrypted in the browser using Web Crypto before it is written to Drive. The master password is not stored in GitHub, Google Drive or the AI gateway.
-
-Current cryptography:
-
-- PBKDF2-SHA-256, 310,000 iterations
-- random 128-bit salt
-- AES-256-GCM
-- new random IV on every vault save
-
-The decrypted vault exists only in browser memory while unlocked.
-
-Do not use the vault for OTPs, CVVs, seed phrases, recovery phrases or private keys. Use a purpose-built hardware/password security solution for those classes of secrets.
-
-## Security rules
-
-- Never commit `OPENAI_API_KEY`.
-- Never put an OpenAI API key in `config.js`.
-- Never commit Google client secrets.
-- Restrict the AI Worker using `ALLOWED_EMAILS`.
-- Restrict CORS using `APP_ORIGINS`.
-- Use HTTPS only.
-- Keep the GitHub repository private if you want the source itself private; the architecture does not depend on source secrecy.
-
-## Development
-
-Because it is a static application, you can inspect it with any static HTTP server. Google Identity Services requires an authorized origin; `file://` is not suitable for the real OAuth flow.
-
-No `npm install`, `node server.js`, Docker container, SQLite database, Express session, or backend server is required.
+- `index.html` — mobile-first app shell
+- `styles.css` — app UI
+- `app.js` — invite/session, chat, uploads, library and People UI
+- `config.js` — public Worker endpoint only
+- `worker/index.js` — API and R2/file workflows
+- `worker/db.js` — D1 schema, sessions and access helpers
+- `worker/ai.js` — low-token OpenAI classification/answering
+- `wrangler.jsonc` — Worker, R2 and D1 bindings
+- `manifest.webmanifest` + `sw.js` — installable PWA
