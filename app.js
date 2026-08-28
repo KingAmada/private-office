@@ -1,106 +1,1068 @@
 (() => {
 'use strict';
+
 const C = window.PRIVATE_OFFICE_CONFIG || {};
-const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
-const state = {idToken:null,accessToken:null,user:null,tokenClient:null,tokenWaiter:null,rootId:null,systemId:null,inboxId:null,indexFileId:null,index:{version:1,updatedAt:null,documents:[]},selectedFiles:[],vaultFileId:null,vaultData:null,vaultKey:null,vaultSalt:null};
-const DRIVE='https://www.googleapis.com/drive/v3';
-const UPLOAD='https://www.googleapis.com/upload/drive/v3';
-const ROOT=C.ROOT_FOLDER||'Private Office';
-const AI_MAX=(Number(C.MAX_AI_FILE_MB)||8)*1024*1024;
-const configured=()=>C.GOOGLE_CLIENT_ID&&!String(C.GOOGLE_CLIENT_ID).includes('PASTE_')&&C.AI_GATEWAY_URL&&!String(C.AI_GATEWAY_URL).includes('YOUR-');
-const esc=s=>String(s??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]));
-const safe=s=>String(s||'Unsorted').replace(/[\\/:*?"<>|]/g,' ').replace(/\s+/g,' ').trim().slice(0,90)||'Unsorted';
-const toast=(m)=>{const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.remove('show'),2600)};
-const openModal=id=>$('#'+id).classList.remove('hidden'); const closeModal=id=>$('#'+id).classList.add('hidden');
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
 
-function decodeJwt(token){try{const p=token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/');return JSON.parse(decodeURIComponent([...atob(p)].map(c=>'%'+c.charCodeAt(0).toString(16).padStart(2,'0')).join('')))}catch{return {}}}
-function waitForGoogle(){if(window.google?.accounts){initIdentity();return}setTimeout(waitForGoogle,120)}
-function initIdentity(){
-  if(!C.GOOGLE_CLIENT_ID||String(C.GOOGLE_CLIENT_ID).includes('PASTE_')){$('#configWarning').classList.remove('hidden');return}
-  google.accounts.id.initialize({client_id:C.GOOGLE_CLIENT_ID,callback:onIdentity,auto_select:false,cancel_on_tap_outside:true});
-  google.accounts.id.renderButton($('#googleButton'),{theme:'outline',size:'large',shape:'pill',text:'continue_with',width:280});
-  state.tokenClient=google.accounts.oauth2.initTokenClient({client_id:C.GOOGLE_CLIENT_ID,scope:'openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file',callback:r=>{
-    if(r.error){state.tokenWaiter?.reject(new Error(r.error_description||r.error));state.tokenWaiter=null;return}
-    state.accessToken=r.access_token;state.tokenWaiter?.resolve(r.access_token);state.tokenWaiter=null;
-  }});
-}
-async function onIdentity(r){state.idToken=r.credential;sessionStorage.setItem('po_id_token',r.credential);state.user=decodeJwt(r.credential);try{await requestDriveToken('consent');await startApp()}catch(e){toast(e.message)}}
-function requestDriveToken(prompt=''){return new Promise((resolve,reject)=>{state.tokenWaiter={resolve,reject};state.tokenClient.requestAccessToken({prompt})})}
-async function ensureToken(){if(state.accessToken)return state.accessToken;return requestDriveToken('')}
-async function driveFetch(url,opts={},retry=true){await ensureToken();const headers={...(opts.headers||{}),Authorization:`Bearer ${state.accessToken}`};const r=await fetch(url,{...opts,headers});if(r.status===401&&retry){state.accessToken=null;await requestDriveToken('');return driveFetch(url,opts,false)}if(!r.ok){let d='';try{d=(await r.json())?.error?.message||''}catch{}throw new Error(d||`Google Drive request failed (${r.status})`)}return r}
-async function driveJson(url,opts={}){return (await driveFetch(url,opts)).json()}
-function qName(s){return String(s).replace(/'/g,"\\'")}
-async function ensureFolder(name,parent='root'){
-  const q=encodeURIComponent(`'${parent}' in parents and name='${qName(name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-  const found=await driveJson(`${DRIVE}/files?q=${q}&spaces=drive&pageSize=10&fields=files(id,name)`);if(found.files?.[0])return found.files[0].id;
-  const created=await driveJson(`${DRIVE}/files?fields=id,name`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,mimeType:'application/vnd.google-apps.folder',parents:[parent]})});return created.id;
-}
-async function findFile(name,parent){const q=encodeURIComponent(`'${parent}' in parents and name='${qName(name)}' and trashed=false`);const d=await driveJson(`${DRIVE}/files?q=${q}&spaces=drive&pageSize=10&fields=files(id,name,mimeType,webViewLink)`);return d.files?.[0]||null}
-async function createJsonFile(name,parent,obj){const meta=await driveJson(`${DRIVE}/files?fields=id,name`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,mimeType:'application/json',parents:[parent]})});await updateFileContent(meta.id,JSON.stringify(obj,null,2),'application/json');return meta.id}
-async function updateFileContent(id,text,type='application/json'){await driveFetch(`${UPLOAD}/files/${encodeURIComponent(id)}?uploadType=media`,{method:'PATCH',headers:{'Content-Type':type},body:text})}
-async function readJsonFile(id){const r=await driveFetch(`${DRIVE}/files/${encodeURIComponent(id)}?alt=media`);return JSON.parse(await r.text())}
-async function ensureWorkspace(){
-  state.rootId=await ensureFolder(ROOT);state.systemId=await ensureFolder('.system',state.rootId);state.inboxId=await ensureFolder('Inbox',state.rootId);
-  let idx=await findFile('private-office-index.json',state.systemId);if(!idx){state.indexFileId=await createJsonFile('private-office-index.json',state.systemId,state.index)}else{state.indexFileId=idx.id;try{state.index=await readJsonFile(idx.id)}catch{state.index={version:1,updatedAt:null,documents:[]}}}
-  if(!Array.isArray(state.index.documents))state.index.documents=[];
-  const vf=await findFile('private-office-vault.enc.json',state.systemId);state.vaultFileId=vf?.id||null;
-}
-async function saveIndex(){state.index.updatedAt=new Date().toISOString();await updateFileContent(state.indexFileId,JSON.stringify(state.index,null,2));renderDashboard()}
-async function startApp(){
-  $('#login').classList.add('hidden');$('#app').classList.remove('hidden');
-  const u=state.user||{};$('#userName').textContent=u.name||u.email||'Google user';$('#userEmail').textContent=u.email||'';$('#avatar').src=u.picture||'';$('#driveDot').classList.add('on');$('#driveSub').textContent='Connected privately';
-  const first=(u.given_name||u.name||'').split(' ')[0];$('#greeting').textContent=first?`What do you need, ${first}?`:'What do you need?';
-  $('#syncState').textContent='Opening private memory…';await ensureWorkspace();renderDashboard();$('#syncState').textContent='Google Drive · private memory ready';
-}
-function renderDashboard(){
-  const docs=state.index.documents||[];$('#statDocs').textContent=docs.length;$('#statReview').textContent=docs.filter(x=>x.needsReview).length;
-  const props=new Set(docs.filter(x=>x.entityType==='property'&&x.entityName).map(x=>x.entityName.toLowerCase()));const cos=new Set(docs.filter(x=>x.entityType==='company'&&x.entityName).map(x=>x.entityName.toLowerCase()));$('#statProperties').textContent=props.size;$('#statCompanies').textContent=cos.size;
-  const review=docs.filter(x=>x.needsReview);$('#attention').innerHTML=review.length?`<div class="notice"><b>${review.length} document${review.length===1?'':'s'} need confirmation</b><small>Low-confidence classifications are waiting for review.</small></div>`:`<div class="notice"><b>All caught up</b><small>No indexed documents currently need review.</small></div>`;
-  $('#recent').innerHTML=docs.slice().sort((a,b)=>String(b.indexedAt).localeCompare(String(a.indexedAt))).slice(0,6).map(x=>`<div class="recentItem"><div class="docIcon">${esc((x.documentType||'DOC').slice(0,3).toUpperCase())}</div><div><b>${esc(x.title||x.name)}</b><small>${esc(x.entityName||x.category||'Document')}</small></div></div>`).join('')||'<div class="notice"><small>No documents remembered yet.</small></div>';
-  const counts={};docs.forEach(x=>counts[x.category||'Other']=(counts[x.category||'Other']||0)+1);$('#categories').innerHTML=Object.entries(counts).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`<div class="cat"><span>${esc(k)}</span><b>${n}</b></div>`).join('')||'<div class="cat"><span>No categories yet</span><b>0</b></div>';
-}
-function fileToBase64(file){return new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=rej;fr.readAsDataURL(file)})}
-async function callGateway(action,payload){if(!configured())throw new Error('AI gateway is not configured yet');if(!state.idToken)throw new Error('Google identity session missing');const r=await fetch(C.AI_GATEWAY_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${state.idToken}`},body:JSON.stringify({action,...payload})});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.error||`AI gateway failed (${r.status})`);return d}
-async function classifyBlob(blob,name,mime){if(blob.size>AI_MAX)throw new Error(`AI scan limit is ${(AI_MAX/1024/1024).toFixed(0)} MB per file`);const b64=await fileToBase64(new File([blob],name,{type:mime||blob.type||'application/octet-stream'}));const d=await callGateway('classify',{name,mime:mime||blob.type||'application/octet-stream',base64:b64});return d.classification}
-async function uploadDriveFile(file,parent){
-  const boundary='po_'+crypto.randomUUID();const meta=JSON.stringify({name:file.name,parents:[parent]});const head=`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: ${file.type||'application/octet-stream'}\r\n\r\n`;const tail=`\r\n--${boundary}--`;const body=new Blob([head,file,tail],{type:`multipart/related; boundary=${boundary}`});
-  return driveJson(`${UPLOAD}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime`,{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});
-}
-function categoryFolder(c){return ({Properties:'Properties',Companies:'Companies',Banking:'Banking & Finance',Personal:'Personal',Legal:'Legal & Agreements',Vehicles:'Vehicles & Assets',Insurance:'Insurance',Investments:'Investments',Taxes:'Taxes',Other:'Other'})[c]||'Other'}
-async function destinationFor(c){const cat=await ensureFolder(categoryFolder(c.category),state.rootId);if(c.linked_entity_name)return ensureFolder(safe(c.linked_entity_name),cat);return cat}
-async function moveNewFile(id,oldParent,newParent){await driveFetch(`${DRIVE}/files/${encodeURIComponent(id)}?addParents=${encodeURIComponent(newParent)}&removeParents=${encodeURIComponent(oldParent)}&fields=id,parents`,{method:'PATCH'})}
-function recordFrom(meta,c,path,existing=false){return {id:crypto.randomUUID(),driveId:meta.id,name:meta.name,title:c.title||meta.name,documentType:c.document_type||'Document',category:c.category||'Other',summary:c.summary||'',searchText:c.search_text||'',documentDate:c.document_date||null,expiryDate:c.expiry_date||null,entityType:c.linked_entity_type||null,entityName:c.linked_entity_name||null,tags:c.tags||[],parties:c.parties||[],sensitivity:c.sensitivity||'normal',confidence:Number(c.confidence||0),needsReview:Boolean(c.needs_review||Number(c.confidence||0)<.82),driveUrl:meta.webViewLink||`https://drive.google.com/open?id=${meta.id}`,drivePath:path,existingDrive:existing,indexedAt:new Date().toISOString(),modifiedTime:meta.modifiedTime||null}}
-async function uploadSelected(){if(!state.selectedFiles.length)return;$('#uploadNow').disabled=true;for(let i=0;i<state.selectedFiles.length;i++){
-  const file=state.selectedFiles[i],row=$(`#uploadQueue [data-i="${i}"]`);const status=row.querySelector('small'),bar=row.querySelector('.bar i');try{status.textContent='Uploading to Drive…';bar.style.width='24%';const meta=await uploadDriveFile(file,state.inboxId);status.textContent='AI is reading…';bar.style.width='52%';let c;try{c=await classifyBlob(file,file.name,file.type)}catch(e){c={document_type:'Document',category:'Other',title:file.name,summary:'Uploaded but AI classification needs review.',search_text:file.name,document_date:null,expiry_date:null,linked_entity_type:null,linked_entity_name:null,parties:[],tags:[],sensitivity:'normal',confidence:0,needs_review:true};toast(e.message)}let path=`${ROOT} / Inbox`;if(!c.needs_review&&Number(c.confidence)>=.82&&c.sensitivity!=='vault_forbidden'){const dest=await destinationFor(c);await moveNewFile(meta.id,state.inboxId,dest);path=`${ROOT} / ${categoryFolder(c.category)}${c.linked_entity_name?' / '+safe(c.linked_entity_name):''}`}const rec=recordFrom(meta,c,path,false);state.index.documents.unshift(rec);status.textContent=rec.needsReview?'Uploaded · needs review':'Organized · '+path;bar.style.width='100%'}catch(e){status.textContent='Failed · '+e.message;bar.style.width='100%'}}await saveIndex();toast('Private Office remembered the upload');setTimeout(()=>{closeModal('uploadModal');state.selectedFiles=[];$('#uploadQueue').innerHTML='';$('#uploadNow').disabled=true;$('#fileInput').value=''},700)}
-function setFiles(files){state.selectedFiles=[...files];$('#uploadNow').disabled=!state.selectedFiles.length;$('#uploadQueue').innerHTML=state.selectedFiles.map((f,i)=>`<div class="queueItem" data-i="${i}"><div class="queueItemTop"><b>${esc(f.name)}</b><small>${(f.size/1024/1024).toFixed(2)} MB · ready</small></div><div class="bar"><i></i></div></div>`).join('')}
-async function getExistingContent(meta){let url,type=meta.mimeType,name=meta.name;if(type==='application/vnd.google-apps.document'){url=`${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('text/plain')}`;type='text/plain';name+='.txt'}else if(type==='application/vnd.google-apps.spreadsheet'){url=`${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('text/csv')}`;type='text/csv';name+='.csv'}else if(type==='application/vnd.google-apps.presentation'){url=`${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('application/pdf')}`;type='application/pdf';name+='.pdf'}else if(type.startsWith('application/vnd.google-apps.')){throw new Error('Unsupported Google file type')}else url=`${DRIVE}/files/${meta.id}?alt=media`;const r=await driveFetch(url);const blob=await r.blob();if(blob.size>AI_MAX)throw new Error('File is above AI scan limit');return {blob,name,type}}
-async function syncDrive(){const buttons=$$('[data-action="sync"]');buttons.forEach(b=>b.disabled=true);$('#syncState').textContent='Indexing existing Drive…';try{const batch=Number(C.SYNC_BATCH_SIZE)||8;const d=await driveJson(`${DRIVE}/files?q=${encodeURIComponent("trashed=false and mimeType!='application/vnd.google-apps.folder'")}&orderBy=modifiedTime desc&pageSize=${batch*5}&fields=files(id,name,mimeType,webViewLink,modifiedTime,size,parents)`);const known=new Set(state.index.documents.map(x=>x.driveId));const ignore=new Set([state.indexFileId,state.vaultFileId].filter(Boolean));let done=0,skipped=0;for(const meta of d.files||[]){if(done>=batch)break;if(known.has(meta.id)||ignore.has(meta.id))continue;try{const f=await getExistingContent(meta);const c=await classifyBlob(f.blob,f.name,f.type);state.index.documents.push(recordFrom(meta,c,'Existing Google Drive · original left in place',true));done++}catch{skipped++}}if(done)await saveIndex();toast(done?`Indexed ${done} existing Drive file${done===1?'':'s'}`:'No new supported files in this batch');if(skipped)console.info('Private Office skipped',skipped,'unsupported/large files')}catch(e){toast(e.message)}finally{buttons.forEach(b=>b.disabled=false);$('#syncState').textContent='Google Drive · private memory ready'}}
-function tokenize(s){return [...new Set(String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').split(/\s+/).filter(x=>x.length>1))]}
-function searchRecords(q){const terms=tokenize(q);return state.index.documents.map(d=>{const title=`${d.title} ${d.name} ${d.entityName||''}`.toLowerCase(),body=`${d.summary} ${d.searchText} ${(d.tags||[]).join(' ')} ${(d.parties||[]).join(' ')} ${d.category||''} ${d.documentType||''}`.toLowerCase();let score=0;terms.forEach(t=>{if(title.includes(t))score+=6;if(body.includes(t))score+=2});if(/expir|renew|due/.test(q.toLowerCase())&&d.expiryDate)score+=4;return {d,score}}).filter(x=>x.score>0).sort((a,b)=>b.score-a.score).slice(0,10).map(x=>x.d)}
-function addMessage(text,who='ai',sources=[]){const el=document.createElement('div');el.className='message '+who;el.innerHTML=`<div class="bubble">${esc(text)}${sources.length?`<div class="sourceList">${sources.slice(0,5).map(s=>`<div class="source"><div><b>${esc(s.title||s.name)}</b><small>${esc(s.entityName||s.category||'Drive document')}</small></div><a href="${esc(s.driveUrl)}" target="_blank" rel="noopener">Open</a></div>`).join('')}</div>`:''}</div>`;$('#chatLog').appendChild(el);$('#chatLog').scrollTop=$('#chatLog').scrollHeight;return el}
-async function submitChat(){const q=$('#prompt').value.trim();if(!q)return;$('#prompt').value='';addMessage(q,'user');if(/\b(password|passcode|credential|login password|pin|cvv|otp|seed phrase|private key)\b/i.test(q)){addMessage('That belongs in the Private Vault, not AI search. I’ve opened the vault for you.','ai');openModal('vaultModal');return}const matches=searchRecords(q);const thinking=addMessage('Thinking…','ai');try{if(!configured()){thinking.remove();if(matches.length)addMessage(`I found ${matches.length} likely record${matches.length===1?'':'s'}. Configure the AI gateway to turn this into a full conversational answer.`,'ai',matches);else addMessage('I could not find a matching indexed record. Configure the AI gateway, or index more of Google Drive.','ai');return}const records=matches.map(x=>({id:x.id,title:x.title,name:x.name,category:x.category,documentType:x.documentType,entityType:x.entityType,entityName:x.entityName,summary:x.summary,searchText:x.searchText,documentDate:x.documentDate,expiryDate:x.expiryDate,drivePath:x.drivePath}));const r=await callGateway('chat',{message:q,records});thinking.remove();addMessage(r.answer||'I could not answer from the indexed records.','ai',matches)}catch(e){thinking.remove();addMessage(`I couldn't complete that request: ${e.message}`,'ai',matches)}}
-function loadLibrary(review=false){openModal('libraryModal');$('#libraryTitle').textContent=review?'Needs review':'Library';renderLibrary(review)}
-function renderLibrary(review=$('#libraryTitle').textContent==='Needs review'){const q=$('#librarySearch').value.trim();let docs=review?state.index.documents.filter(x=>x.needsReview):state.index.documents.slice();if(q)docs=searchRecords(q);$('#libraryList').innerHTML=docs.slice(0,100).map(x=>`<div class="libItem"><div class="docIcon">${esc((x.documentType||'DOC').slice(0,3).toUpperCase())}</div><div><b>${esc(x.title||x.name)}</b><small>${esc([x.entityName,x.category,x.needsReview?'Needs review':''].filter(Boolean).join(' · '))}</small></div><a href="${esc(x.driveUrl)}" target="_blank" rel="noopener">Open</a></div>`).join('')||'<div class="notice"><small>Nothing found.</small></div>'}
+const state = {
+  idToken: null,
+  accessToken: null,
+  user: null,
+  tokenClient: null,
+  tokenWaiter: null,
+  rootId: null,
+  systemId: null,
+  inboxId: null,
+  indexFileId: null,
+  index: { version: 2, updatedAt: null, documents: [] },
+  selectedFiles: [],
+  vaultFileId: null,
+  vaultData: null,
+  vaultKey: null,
+  vaultSalt: null
+};
 
-const b64=b=>btoa(String.fromCharCode(...new Uint8Array(b)));const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
-async function deriveVaultKey(password,salt){const raw=new TextEncoder().encode(password);const base=await crypto.subtle.importKey('raw',raw,'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:310000,hash:'SHA-256'},base,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
-async function encryptVault(data,key,salt){const iv=crypto.getRandomValues(new Uint8Array(12));const pt=new TextEncoder().encode(JSON.stringify(data));const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,pt);return {v:1,kdf:'PBKDF2-SHA256',iterations:310000,salt:b64(salt),iv:b64(iv),ciphertext:b64(ct)}}
-async function decryptVault(env,password){const salt=unb64(env.salt),key=await deriveVaultKey(password,salt),iv=unb64(env.iv),ct=unb64(env.ciphertext);try{const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,ct);return {data:JSON.parse(new TextDecoder().decode(pt)),key,salt}}catch{throw new Error('Wrong master password or damaged vault')}}
-async function createVault(){const p=$('#vaultMaster').value;if(p.length<10)return toast('Use a master password of at least 10 characters');if(state.vaultFileId&&!confirm('A vault already exists. Replace it with a new empty vault?'))return;const salt=crypto.getRandomValues(new Uint8Array(16)),key=await deriveVaultKey(p,salt),data={version:1,items:[]};const env=await encryptVault(data,key,salt);if(state.vaultFileId)await updateFileContent(state.vaultFileId,JSON.stringify(env));else state.vaultFileId=await createJsonFile('private-office-vault.enc.json',state.systemId,env);state.vaultData=data;state.vaultKey=key;state.vaultSalt=salt;renderVault();toast('Encrypted vault created')}
-async function unlockVault(){if(!state.vaultFileId)return toast('Create the vault first');const p=$('#vaultMaster').value;if(!p)return toast('Enter the master password');try{const env=await readJsonFile(state.vaultFileId),r=await decryptVault(env,p);state.vaultData=r.data;state.vaultKey=r.key;state.vaultSalt=r.salt;$('#vaultMaster').value='';renderVault();toast('Vault unlocked')}catch(e){toast(e.message)}}
-async function saveVault(){const env=await encryptVault(state.vaultData,state.vaultKey,state.vaultSalt);await updateFileContent(state.vaultFileId,JSON.stringify(env))}
-function renderVault(){const unlocked=!!state.vaultData;$('#vaultState').textContent=unlocked?'Unlocked in this browser tab only. It will lock when this page closes.':state.vaultFileId?'Encrypted vault found in Drive. Enter the master password to unlock.':'No vault exists yet.';$('#vaultItems').innerHTML=unlocked?(state.vaultData.items||[]).map(x=>`<div class="credential"><div><b>${esc(x.label)}</b><small>${esc(x.username||x.url||'Credential')}</small></div><button data-vault-id="${esc(x.id)}">Reveal</button></div>`).join('')||'<div class="micro">No credentials saved yet.</div>':'<div class="micro">Unlock the vault to see credentials.</div>';$$('[data-vault-id]').forEach(b=>b.onclick=()=>revealVault(b.dataset.vaultId,b))}
-async function addVaultItem(){if(!state.vaultData)return toast('Unlock the vault first');const label=$('#vaultLabel').value.trim(),password=$('#vaultPassword').value;if(!label||!password)return toast('Label and password are required');if(/\b(otp|cvv|seed phrase|private key|recovery phrase)\b/i.test(label))return toast('Do not store one-time codes, CVVs, seed phrases or private keys here');state.vaultData.items.unshift({id:crypto.randomUUID(),label,username:$('#vaultUsername').value.trim(),password,url:$('#vaultUrl').value.trim(),createdAt:new Date().toISOString()});await saveVault();['vaultLabel','vaultUsername','vaultPassword','vaultUrl'].forEach(id=>$('#'+id).value='');renderVault();toast('Encrypted and saved to Drive')}
-function revealVault(id,button){const x=state.vaultData?.items?.find(i=>i.id===id);if(!x)return;const old=button.textContent;button.textContent=x.password;navigator.clipboard?.writeText(x.password).then(()=>toast('Password copied')).catch(()=>{});setTimeout(()=>button.textContent=old,15000)}
-function lockVault(){state.vaultData=null;state.vaultKey=null;state.vaultSalt=null;$('#vaultMaster').value='';renderVault();toast('Vault locked')}
-async function disconnect(){try{if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken,()=>{})}catch{}sessionStorage.removeItem('po_id_token');location.reload()}
-function bind(){
-  $$('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));$$('.overlay').forEach(o=>o.onclick=e=>{if(e.target===o)closeModal(o.id)});
-  $$('[data-action="upload"]').forEach(b=>b.onclick=()=>openModal('uploadModal'));$$('[data-action="library"]').forEach(b=>b.onclick=()=>loadLibrary(false));$$('[data-action="review"]').forEach(b=>b.onclick=()=>loadLibrary(true));$$('[data-action="vault"]').forEach(b=>b.onclick=()=>{openModal('vaultModal');renderVault()});$$('[data-action="sync"]').forEach(b=>b.onclick=syncDrive);$$('[data-action="focus-chat"]').forEach(b=>b.onclick=()=>{$('#chatCard').scrollIntoView({behavior:'smooth'});$('#prompt').focus()});
-  $('#chooseFiles').onclick=()=>$('#fileInput').click();$('#fileInput').onchange=e=>setFiles(e.target.files);$('#uploadNow').onclick=uploadSelected;['dragenter','dragover'].forEach(ev=>$('#dropZone').addEventListener(ev,e=>{e.preventDefault();$('#dropZone').classList.add('drag')}));['dragleave','drop'].forEach(ev=>$('#dropZone').addEventListener(ev,e=>{e.preventDefault();$('#dropZone').classList.remove('drag')}));$('#dropZone').addEventListener('drop',e=>setFiles(e.dataTransfer.files));
-  $('#send').onclick=submitChat;$('#prompt').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submitChat()}};$$('.suggestions button').forEach(b=>b.onclick=()=>{$('#prompt').value=b.textContent;submitChat()});let st;$('#librarySearch').oninput=()=>{clearTimeout(st);st=setTimeout(()=>renderLibrary(),180)};
-  $('#vaultCreate').onclick=createVault;$('#vaultUnlock').onclick=unlockVault;$('#vaultSave').onclick=addVaultItem;$('#vaultLock').onclick=lockVault;$('#disconnect').onclick=disconnect;$('#manualConnect').onclick=()=>requestDriveToken('consent').then(startApp).catch(e=>toast(e.message));
+const DRIVE = 'https://www.googleapis.com/drive/v3';
+const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
+const ROOT = C.ROOT_FOLDER || 'Private Office';
+const AI_MAX = (Number(C.MAX_AI_FILE_MB) || 8) * 1024 * 1024;
+const AUTO_CONFIDENCE = 0.82;
+
+const configured = () =>
+  C.GOOGLE_CLIENT_ID &&
+  !String(C.GOOGLE_CLIENT_ID).includes('PASTE_') &&
+  C.AI_GATEWAY_URL &&
+  !String(C.AI_GATEWAY_URL).includes('YOUR-');
+
+const esc = s => String(s ?? '').replace(/[&<>'"]/g, m => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+}[m]));
+
+const safe = s => String(s || 'Unsorted')
+  .replace(/[\\/:*?"<>|]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, 90) || 'Unsorted';
+
+const toast = m => {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = m;
+  t.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => t.classList.remove('show'), 3200);
+};
+
+const openModal = id => $('#'+id)?.classList.remove('hidden');
+const closeModal = id => $('#'+id)?.classList.add('hidden');
+
+function decodeJwt(token) {
+  try {
+    const p = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(decodeURIComponent([...atob(p)].map(c =>
+      '%' + c.charCodeAt(0).toString(16).padStart(2, '0')
+    ).join('')));
+  } catch {
+    return {};
+  }
 }
-function init(){bind();if(!configured())$('#configWarning').classList.remove('hidden');const old=sessionStorage.getItem('po_id_token');if(old){state.idToken=old;state.user=decodeJwt(old)}waitForGoogle();if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}))}
+
+function waitForGoogle() {
+  if (window.google?.accounts) {
+    initIdentity();
+    return;
+  }
+  setTimeout(waitForGoogle, 120);
+}
+
+function initIdentity() {
+  if (!C.GOOGLE_CLIENT_ID || String(C.GOOGLE_CLIENT_ID).includes('PASTE_')) {
+    $('#configWarning')?.classList.remove('hidden');
+    return;
+  }
+
+  google.accounts.id.initialize({
+    client_id: C.GOOGLE_CLIENT_ID,
+    callback: onIdentity,
+    auto_select: false,
+    cancel_on_tap_outside: true,
+    use_fedcm_for_button: true
+  });
+
+  google.accounts.id.renderButton($('#googleButton'), {
+    theme: 'outline',
+    size: 'large',
+    shape: 'pill',
+    text: 'continue_with',
+    width: 280
+  });
+
+  state.tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: C.GOOGLE_CLIENT_ID,
+    scope: 'openid email profile https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file',
+    callback: r => {
+      if (r.error) {
+        state.tokenWaiter?.reject(new Error(r.error_description || r.error));
+        state.tokenWaiter = null;
+        return;
+      }
+      state.accessToken = r.access_token;
+      state.tokenWaiter?.resolve(r.access_token);
+      state.tokenWaiter = null;
+    }
+  });
+}
+
+async function onIdentity(r) {
+  state.idToken = r.credential;
+  sessionStorage.setItem('po_id_token', r.credential);
+  state.user = decodeJwt(r.credential);
+  try {
+    await requestDriveToken('consent');
+    await startApp();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function requestDriveToken(prompt = '') {
+  return new Promise((resolve, reject) => {
+    if (!state.tokenClient) return reject(new Error('Google Drive connection is not ready yet'));
+    state.tokenWaiter = { resolve, reject };
+    state.tokenClient.requestAccessToken({ prompt });
+  });
+}
+
+async function ensureToken() {
+  if (state.accessToken) return state.accessToken;
+  return requestDriveToken('');
+}
+
+async function driveFetch(url, opts = {}, retry = true) {
+  await ensureToken();
+  const headers = { ...(opts.headers || {}), Authorization: `Bearer ${state.accessToken}` };
+  const r = await fetch(url, { ...opts, headers });
+
+  if (r.status === 401 && retry) {
+    state.accessToken = null;
+    await requestDriveToken('');
+    return driveFetch(url, opts, false);
+  }
+
+  if (!r.ok) {
+    let d = '';
+    try { d = (await r.json())?.error?.message || ''; } catch {}
+    throw new Error(d || `Google Drive request failed (${r.status})`);
+  }
+  return r;
+}
+
+async function driveJson(url, opts = {}) {
+  return (await driveFetch(url, opts)).json();
+}
+
+function qName(s) {
+  return String(s).replace(/'/g, "\\'");
+}
+
+async function ensureFolder(name, parent = 'root') {
+  const q = encodeURIComponent(
+    `'${parent}' in parents and name='${qName(name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false`
+  );
+  const found = await driveJson(`${DRIVE}/files?q=${q}&spaces=drive&pageSize=10&fields=files(id,name)`);
+  if (found.files?.[0]) return found.files[0].id;
+
+  const created = await driveJson(`${DRIVE}/files?fields=id,name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: [parent]
+    })
+  });
+  return created.id;
+}
+
+async function findFile(name, parent) {
+  const q = encodeURIComponent(`'${parent}' in parents and name='${qName(name)}' and trashed=false`);
+  const d = await driveJson(
+    `${DRIVE}/files?q=${q}&spaces=drive&pageSize=10&fields=files(id,name,mimeType,webViewLink)`
+  );
+  return d.files?.[0] || null;
+}
+
+async function createJsonFile(name, parent, obj) {
+  const meta = await driveJson(`${DRIVE}/files?fields=id,name`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: 'application/json', parents: [parent] })
+  });
+  await updateFileContent(meta.id, JSON.stringify(obj, null, 2), 'application/json');
+  return meta.id;
+}
+
+async function updateFileContent(id, text, type = 'application/json') {
+  await driveFetch(`${UPLOAD}/files/${encodeURIComponent(id)}?uploadType=media`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': type },
+    body: text
+  });
+}
+
+async function readJsonFile(id) {
+  const r = await driveFetch(`${DRIVE}/files/${encodeURIComponent(id)}?alt=media`);
+  return JSON.parse(await r.text());
+}
+
+async function ensureWorkspace() {
+  state.rootId = await ensureFolder(ROOT);
+  state.systemId = await ensureFolder('.system', state.rootId);
+  state.inboxId = await ensureFolder('Inbox', state.rootId);
+
+  const idx = await findFile('private-office-index.json', state.systemId);
+  if (!idx) {
+    state.indexFileId = await createJsonFile('private-office-index.json', state.systemId, state.index);
+  } else {
+    state.indexFileId = idx.id;
+    try {
+      state.index = await readJsonFile(idx.id);
+    } catch {
+      state.index = { version: 2, updatedAt: null, documents: [] };
+    }
+  }
+
+  if (!Array.isArray(state.index.documents)) state.index.documents = [];
+  state.index.version = Math.max(Number(state.index.version || 1), 2);
+
+  const vf = await findFile('private-office-vault.enc.json', state.systemId);
+  state.vaultFileId = vf?.id || null;
+}
+
+async function saveIndex() {
+  state.index.updatedAt = new Date().toISOString();
+  await updateFileContent(state.indexFileId, JSON.stringify(state.index, null, 2));
+  renderDashboard();
+}
+
+async function startApp() {
+  $('#login')?.classList.add('hidden');
+  $('#app')?.classList.remove('hidden');
+
+  const u = state.user || {};
+  $('#userName').textContent = u.name || u.email || 'Google user';
+  $('#userEmail').textContent = u.email || '';
+  $('#avatar').src = u.picture || '';
+  $('#driveDot').classList.add('on');
+  $('#driveSub').textContent = 'Connected privately';
+
+  const first = (u.given_name || u.name || '').split(' ')[0];
+  $('#greeting').textContent = first ? `What do you need, ${first}?` : 'What do you need?';
+
+  $('#syncState').textContent = 'Opening private memory…';
+  await ensureWorkspace();
+  renderDashboard();
+  $('#syncState').textContent = 'Google Drive · private memory ready';
+}
+
+function renderDashboard() {
+  const docs = state.index.documents || [];
+  $('#statDocs').textContent = docs.length;
+  $('#statReview').textContent = docs.filter(x => x.needsReview).length;
+
+  const props = new Set(
+    docs.filter(x => x.entityType === 'property' && x.entityName)
+      .map(x => x.entityName.toLowerCase())
+  );
+  const cos = new Set(
+    docs.filter(x => x.entityType === 'company' && x.entityName)
+      .map(x => x.entityName.toLowerCase())
+  );
+
+  $('#statProperties').textContent = props.size;
+  $('#statCompanies').textContent = cos.size;
+
+  const review = docs.filter(x => x.needsReview);
+  $('#attention').innerHTML = review.length
+    ? `<div class="notice"><b>${review.length} document${review.length === 1 ? '' : 's'} need confirmation</b><small>Low-confidence or incomplete classifications are waiting for review.</small></div>`
+    : `<div class="notice"><b>All caught up</b><small>No indexed documents currently need review.</small></div>`;
+
+  $('#recent').innerHTML = docs.slice()
+    .sort((a, b) => String(b.indexedAt).localeCompare(String(a.indexedAt)))
+    .slice(0, 6)
+    .map(x => `<div class="recentItem"><div class="docIcon">${esc((x.documentType || 'DOC').slice(0, 3).toUpperCase())}</div><div><b>${esc(x.title || x.name)}</b><small>${esc(x.entityName || x.category || 'Document')}</small></div></div>`)
+    .join('') || '<div class="notice"><small>No documents remembered yet.</small></div>';
+
+  const counts = {};
+  docs.forEach(x => counts[x.category || 'Other'] = (counts[x.category || 'Other'] || 0) + 1);
+  $('#categories').innerHTML = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `<div class="cat"><span>${esc(k)}</span><b>${n}</b></div>`)
+    .join('') || '<div class="cat"><span>No categories yet</span><b>0</b></div>';
+}
+
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1]);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+}
+
+async function callGateway(action, payload) {
+  if (!configured()) throw new Error('AI gateway is not configured yet');
+  if (!state.idToken) throw new Error('Google identity session missing');
+
+  const r = await fetch(C.AI_GATEWAY_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${state.idToken}`
+    },
+    body: JSON.stringify({ action, ...payload })
+  });
+
+  let d = {};
+  try { d = await r.json(); } catch {}
+  if (!r.ok) throw new Error(d.error || `AI gateway failed (${r.status})`);
+  return d;
+}
+
+async function classifyBlob(blob, name, mime) {
+  if (blob.size > AI_MAX) {
+    throw new Error(`AI scan limit is ${(AI_MAX / 1024 / 1024).toFixed(0)} MB per file`);
+  }
+  const b64 = await fileToBase64(new File(
+    [blob],
+    name,
+    { type: mime || blob.type || 'application/octet-stream' }
+  ));
+  const d = await callGateway('classify', {
+    name,
+    mime: mime || blob.type || 'application/octet-stream',
+    base64: b64
+  });
+  return d.classification;
+}
+
+async function uploadDriveFile(file, parent) {
+  const boundary = 'po_' + crypto.randomUUID();
+  const meta = JSON.stringify({ name: file.name, parents: [parent] });
+  const head =
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n` +
+    `--${boundary}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`;
+  const tail = `\r\n--${boundary}--`;
+  const body = new Blob([head, file, tail], {
+    type: `multipart/related; boundary=${boundary}`
+  });
+
+  return driveJson(
+    `${UPLOAD}/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,parents,size,modifiedTime`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body
+    }
+  );
+}
+
+function categoryFolder(c) {
+  return ({
+    Properties: 'Properties',
+    Companies: 'Companies',
+    Banking: 'Banking & Finance',
+    Personal: 'Personal',
+    Legal: 'Legal & Agreements',
+    Vehicles: 'Vehicles & Assets',
+    Insurance: 'Insurance',
+    Investments: 'Investments',
+    Taxes: 'Taxes',
+    Other: 'Other'
+  })[c] || 'Other';
+}
+
+async function destinationFor(c) {
+  const cat = await ensureFolder(categoryFolder(c.category), state.rootId);
+  if (c.linked_entity_name) return ensureFolder(safe(c.linked_entity_name), cat);
+  return cat;
+}
+
+async function moveNewFile(id, oldParent, newParent) {
+  await driveFetch(
+    `${DRIVE}/files/${encodeURIComponent(id)}?addParents=${encodeURIComponent(newParent)}&removeParents=${encodeURIComponent(oldParent)}&fields=id,parents`,
+    { method: 'PATCH' }
+  );
+}
+
+function recordFrom(meta, c, path, existing = false) {
+  return {
+    id: crypto.randomUUID(),
+    driveId: meta.id,
+    name: meta.name,
+    title: c.title || meta.name,
+    documentType: c.document_type || 'Document',
+    category: c.category || 'Other',
+    summary: c.summary || '',
+    searchText: c.search_text || '',
+    documentDate: c.document_date || null,
+    expiryDate: c.expiry_date || null,
+    entityType: c.linked_entity_type || null,
+    entityName: c.linked_entity_name || null,
+    tags: c.tags || [],
+    parties: c.parties || [],
+    sensitivity: c.sensitivity || 'normal',
+    confidence: Number(c.confidence || 0),
+    needsReview: Boolean(c.needs_review || Number(c.confidence || 0) < AUTO_CONFIDENCE),
+    driveUrl: meta.webViewLink || `https://drive.google.com/open?id=${meta.id}`,
+    drivePath: path,
+    existingDrive: existing,
+    indexedAt: new Date().toISOString(),
+    modifiedTime: meta.modifiedTime || null
+  };
+}
+
+function placeholderClassification(name, message = 'Uploaded but AI classification needs review.') {
+  return {
+    document_type: 'Document',
+    category: 'Other',
+    title: name,
+    summary: message,
+    search_text: name,
+    document_date: null,
+    expiry_date: null,
+    linked_entity_type: null,
+    linked_entity_name: null,
+    parties: [],
+    tags: [],
+    sensitivity: 'normal',
+    confidence: 0,
+    needs_review: true
+  };
+}
+
+async function uploadSelected() {
+  if (!state.selectedFiles.length) return;
+  $('#uploadNow').disabled = true;
+
+  for (let i = 0; i < state.selectedFiles.length; i++) {
+    const file = state.selectedFiles[i];
+    const row = $(`#uploadQueue [data-i="${i}"]`);
+    const status = row.querySelector('small');
+    const bar = row.querySelector('.bar i');
+
+    try {
+      status.textContent = 'Uploading to Drive…';
+      bar.style.width = '24%';
+
+      const meta = await uploadDriveFile(file, state.inboxId);
+
+      status.textContent = 'AI is reading…';
+      bar.style.width = '52%';
+
+      let c;
+      try {
+        c = await classifyBlob(file, file.name, file.type);
+      } catch (e) {
+        c = placeholderClassification(file.name);
+        toast(e.message);
+      }
+
+      let path = `${ROOT} / Inbox`;
+
+      if (!c.needs_review && Number(c.confidence) >= AUTO_CONFIDENCE && c.sensitivity !== 'vault_forbidden') {
+        const dest = await destinationFor(c);
+        await moveNewFile(meta.id, state.inboxId, dest);
+        path = `${ROOT} / ${categoryFolder(c.category)}${c.linked_entity_name ? ' / ' + safe(c.linked_entity_name) : ''}`;
+      }
+
+      const rec = recordFrom(meta, c, path, false);
+      state.index.documents.unshift(rec);
+
+      status.textContent = rec.needsReview ? 'Uploaded · needs review' : 'Organized · ' + path;
+      bar.style.width = '100%';
+    } catch (e) {
+      status.textContent = 'Failed · ' + e.message;
+      bar.style.width = '100%';
+    }
+  }
+
+  await saveIndex();
+  toast('Private Office remembered the upload');
+
+  setTimeout(() => {
+    closeModal('uploadModal');
+    state.selectedFiles = [];
+    $('#uploadQueue').innerHTML = '';
+    $('#uploadNow').disabled = true;
+    $('#fileInput').value = '';
+  }, 700);
+}
+
+function setFiles(files) {
+  state.selectedFiles = [...files];
+  $('#uploadNow').disabled = !state.selectedFiles.length;
+  $('#uploadQueue').innerHTML = state.selectedFiles.map((f, i) =>
+    `<div class="queueItem" data-i="${i}"><div class="queueItemTop"><b>${esc(f.name)}</b><small>${(f.size / 1024 / 1024).toFixed(2)} MB · ready</small></div><div class="bar"><i></i></div></div>`
+  ).join('');
+}
+
+async function getExistingContent(meta) {
+  let url;
+  let type = meta.mimeType;
+  let name = meta.name;
+
+  if (type === 'application/vnd.google-apps.document') {
+    url = `${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('text/plain')}`;
+    type = 'text/plain';
+    name += '.txt';
+  } else if (type === 'application/vnd.google-apps.spreadsheet') {
+    url = `${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('text/csv')}`;
+    type = 'text/csv';
+    name += '.csv';
+  } else if (type === 'application/vnd.google-apps.presentation') {
+    url = `${DRIVE}/files/${meta.id}/export?mimeType=${encodeURIComponent('application/pdf')}`;
+    type = 'application/pdf';
+    name += '.pdf';
+  } else if (type.startsWith('application/vnd.google-apps.')) {
+    throw new Error('Unsupported Google file type');
+  } else {
+    url = `${DRIVE}/files/${meta.id}?alt=media`;
+  }
+
+  const r = await driveFetch(url);
+  const blob = await r.blob();
+  if (blob.size > AI_MAX) throw new Error('File is above AI scan limit');
+  return { blob, name, type };
+}
+
+function needsRepair(rec) {
+  const summary = String(rec.summary || '').toLowerCase();
+  return Boolean(
+    rec.needsReview &&
+    (
+      Number(rec.confidence || 0) === 0 ||
+      summary.includes('ai classification needs review') ||
+      summary.includes('uploaded but ai classification') ||
+      (rec.category === 'Other' && !rec.searchText)
+    )
+  );
+}
+
+async function refreshOneRecord(rec) {
+  const meta = await driveJson(
+    `${DRIVE}/files/${encodeURIComponent(rec.driveId)}?fields=id,name,mimeType,webViewLink,modifiedTime,size,parents`
+  );
+
+  const f = await getExistingContent(meta);
+  const c = await classifyBlob(f.blob, f.name, f.type);
+
+  let path = rec.drivePath || 'Existing Google Drive · original left in place';
+
+  const isAppUpload = !rec.existingDrive;
+  const isStillInInbox = Array.isArray(meta.parents) && meta.parents.includes(state.inboxId);
+
+  if (
+    isAppUpload &&
+    isStillInInbox &&
+    !c.needs_review &&
+    Number(c.confidence) >= AUTO_CONFIDENCE &&
+    c.sensitivity !== 'vault_forbidden'
+  ) {
+    const dest = await destinationFor(c);
+    await moveNewFile(meta.id, state.inboxId, dest);
+    path = `${ROOT} / ${categoryFolder(c.category)}${c.linked_entity_name ? ' / ' + safe(c.linked_entity_name) : ''}`;
+  }
+
+  const fresh = recordFrom(meta, c, path, rec.existingDrive);
+  const keepId = rec.id;
+  const firstIndexedAt = rec.indexedAt || fresh.indexedAt;
+
+  Object.assign(rec, fresh, {
+    id: keepId,
+    indexedAt: firstIndexedAt,
+    repairedAt: new Date().toISOString()
+  });
+
+  return rec;
+}
+
+async function syncDrive() {
+  const buttons = $$('[data-action="sync"]');
+  buttons.forEach(b => b.disabled = true);
+
+  let repaired = 0;
+  let added = 0;
+  let skipped = 0;
+
+  try {
+    const batch = Number(C.SYNC_BATCH_SIZE) || 8;
+
+    const repairQueue = state.index.documents
+      .filter(needsRepair)
+      .slice(0, batch);
+
+    for (let i = 0; i < repairQueue.length; i++) {
+      const rec = repairQueue[i];
+      $('#syncState').textContent = `Repairing memory ${i + 1}/${repairQueue.length} · ${rec.name}`;
+      try {
+        await refreshOneRecord(rec);
+        repaired++;
+      } catch (e) {
+        skipped++;
+        console.info('Private Office could not repair', rec.name, e.message);
+      }
+    }
+
+    const remaining = Math.max(0, batch - repaired);
+
+    if (remaining > 0) {
+      $('#syncState').textContent = 'Looking for new Drive files…';
+
+      const d = await driveJson(
+        `${DRIVE}/files?q=${encodeURIComponent("trashed=false and mimeType!='application/vnd.google-apps.folder'")}` +
+        `&orderBy=modifiedTime desc&pageSize=${Math.max(remaining * 5, 20)}` +
+        `&fields=files(id,name,mimeType,webViewLink,modifiedTime,size,parents)`
+      );
+
+      const known = new Set(state.index.documents.map(x => x.driveId));
+      const ignore = new Set([state.indexFileId, state.vaultFileId].filter(Boolean));
+
+      for (const meta of d.files || []) {
+        if (added >= remaining) break;
+        if (known.has(meta.id) || ignore.has(meta.id)) continue;
+
+        try {
+          $('#syncState').textContent = `AI is indexing · ${meta.name}`;
+          const f = await getExistingContent(meta);
+          const c = await classifyBlob(f.blob, f.name, f.type);
+          state.index.documents.push(
+            recordFrom(meta, c, 'Existing Google Drive · original left in place', true)
+          );
+          known.add(meta.id);
+          added++;
+        } catch (e) {
+          skipped++;
+          console.info('Private Office skipped', meta.name, e.message);
+        }
+      }
+    }
+
+    if (repaired || added) await saveIndex();
+
+    if (repaired && added) {
+      toast(`Repaired ${repaired} record${repaired === 1 ? '' : 's'} · indexed ${added} new file${added === 1 ? '' : 's'}`);
+    } else if (repaired) {
+      toast(`Repaired ${repaired} remembered record${repaired === 1 ? '' : 's'}`);
+    } else if (added) {
+      toast(`Indexed ${added} existing Drive file${added === 1 ? '' : 's'}`);
+    } else {
+      toast('Private Office memory is already up to date');
+    }
+
+    if (skipped) console.info('Private Office skipped', skipped, 'unsupported, large or inaccessible files');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+    $('#syncState').textContent = 'Google Drive · private memory ready';
+  }
+}
+
+function tokenize(s) {
+  return [...new Set(
+    String(s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(/\s+/)
+      .filter(x => x.length > 1)
+  )];
+}
+
+function searchRecords(q) {
+  const terms = tokenize(q);
+  const query = String(q || '').toLowerCase();
+
+  const broadMemoryQuestion =
+    /\b(what|which|show|list|tell)\b/.test(query) &&
+    /\b(document|documents|files|records|remember|memory)\b/.test(query);
+
+  const ranked = state.index.documents.map(d => {
+    const title = `${d.title} ${d.name} ${d.entityName || ''}`.toLowerCase();
+    const body = `${d.summary} ${d.searchText} ${(d.tags || []).join(' ')} ${(d.parties || []).join(' ')} ${d.category || ''} ${d.documentType || ''}`.toLowerCase();
+    let score = broadMemoryQuestion ? 1 : 0;
+
+    terms.forEach(t => {
+      if (title.includes(t)) score += 6;
+      if (body.includes(t)) score += 2;
+    });
+
+    if (/expir|renew|due/.test(query) && d.expiryDate) score += 4;
+    return { d, score };
+  });
+
+  return ranked
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12)
+    .map(x => x.d);
+}
+
+function addMessage(text, who = 'ai', sources = []) {
+  const el = document.createElement('div');
+  el.className = 'message ' + who;
+  el.innerHTML =
+    `<div class="bubble">${esc(text)}` +
+    (sources.length
+      ? `<div class="sourceList">${sources.slice(0, 5).map(s =>
+          `<div class="source"><div><b>${esc(s.title || s.name)}</b><small>${esc(s.entityName || s.category || 'Drive document')}</small></div><a href="${esc(s.driveUrl)}" target="_blank" rel="noopener">Open</a></div>`
+        ).join('')}</div>`
+      : '') +
+    `</div>`;
+
+  $('#chatLog').appendChild(el);
+  $('#chatLog').scrollTop = $('#chatLog').scrollHeight;
+  return el;
+}
+
+async function submitChat() {
+  const q = $('#prompt').value.trim();
+  if (!q) return;
+
+  $('#prompt').value = '';
+  addMessage(q, 'user');
+
+  if (/\b(password|passcode|credential|login password|pin|cvv|otp|seed phrase|private key)\b/i.test(q)) {
+    addMessage('That belongs in the Private Vault, not AI search. I’ve opened the vault for you.', 'ai');
+    openModal('vaultModal');
+    return;
+  }
+
+  const matches = searchRecords(q);
+  const thinking = addMessage('Thinking…', 'ai');
+
+  try {
+    if (!configured()) {
+      thinking.remove();
+      if (matches.length) {
+        addMessage(
+          `I found ${matches.length} likely record${matches.length === 1 ? '' : 's'}. Configure the AI gateway to turn this into a full conversational answer.`,
+          'ai',
+          matches
+        );
+      } else {
+        addMessage('I could not find a matching indexed record. Configure the AI gateway, or index more of Google Drive.', 'ai');
+      }
+      return;
+    }
+
+    const records = matches.map(x => ({
+      id: x.id,
+      title: x.title,
+      name: x.name,
+      category: x.category,
+      documentType: x.documentType,
+      entityType: x.entityType,
+      entityName: x.entityName,
+      summary: x.summary,
+      searchText: x.searchText,
+      documentDate: x.documentDate,
+      expiryDate: x.expiryDate,
+      drivePath: x.drivePath
+    }));
+
+    const r = await callGateway('chat', { message: q, records });
+    thinking.remove();
+    addMessage(r.answer || 'I could not answer from the indexed records.', 'ai', matches);
+  } catch (e) {
+    thinking.remove();
+    addMessage(`I couldn't complete that request: ${e.message}`, 'ai', matches);
+  }
+}
+
+function loadLibrary(review = false) {
+  openModal('libraryModal');
+  $('#libraryTitle').textContent = review ? 'Needs review' : 'Library';
+  renderLibrary(review);
+}
+
+function renderLibrary(review = $('#libraryTitle').textContent === 'Needs review') {
+  const q = $('#librarySearch').value.trim();
+  let docs = review
+    ? state.index.documents.filter(x => x.needsReview)
+    : state.index.documents.slice();
+
+  if (q) docs = searchRecords(q);
+
+  $('#libraryList').innerHTML = docs.slice(0, 100).map(x =>
+    `<div class="libItem"><div class="docIcon">${esc((x.documentType || 'DOC').slice(0, 3).toUpperCase())}</div><div><b>${esc(x.title || x.name)}</b><small>${esc([x.entityName, x.category, x.needsReview ? 'Needs review' : ''].filter(Boolean).join(' · '))}</small></div><a href="${esc(x.driveUrl)}" target="_blank" rel="noopener">Open</a></div>`
+  ).join('') || '<div class="notice"><small>Nothing found.</small></div>';
+}
+
+const b64 = b => btoa(String.fromCharCode(...new Uint8Array(b)));
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+async function deriveVaultKey(password, salt) {
+  const raw = new TextEncoder().encode(password);
+  const base = await crypto.subtle.importKey('raw', raw, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' },
+    base,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptVault(data, key, salt) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const pt = new TextEncoder().encode(JSON.stringify(data));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt);
+  return {
+    v: 1,
+    kdf: 'PBKDF2-SHA256',
+    iterations: 310000,
+    salt: b64(salt),
+    iv: b64(iv),
+    ciphertext: b64(ct)
+  };
+}
+
+async function decryptVault(env, password) {
+  const salt = unb64(env.salt);
+  const key = await deriveVaultKey(password, salt);
+  const iv = unb64(env.iv);
+  const ct = unb64(env.ciphertext);
+
+  try {
+    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+    return {
+      data: JSON.parse(new TextDecoder().decode(pt)),
+      key,
+      salt
+    };
+  } catch {
+    throw new Error('Wrong master password or damaged vault');
+  }
+}
+
+async function createVault() {
+  const p = $('#vaultMaster').value;
+  if (p.length < 10) return toast('Use a master password of at least 10 characters');
+
+  if (state.vaultFileId && !confirm('A vault already exists. Replace it with a new empty vault?')) return;
+
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveVaultKey(p, salt);
+  const data = { version: 1, items: [] };
+  const env = await encryptVault(data, key, salt);
+
+  if (state.vaultFileId) {
+    await updateFileContent(state.vaultFileId, JSON.stringify(env));
+  } else {
+    state.vaultFileId = await createJsonFile(
+      'private-office-vault.enc.json',
+      state.systemId,
+      env
+    );
+  }
+
+  state.vaultData = data;
+  state.vaultKey = key;
+  state.vaultSalt = salt;
+  renderVault();
+  toast('Encrypted vault created');
+}
+
+async function unlockVault() {
+  if (!state.vaultFileId) return toast('Create the vault first');
+  const p = $('#vaultMaster').value;
+  if (!p) return toast('Enter the master password');
+
+  try {
+    const env = await readJsonFile(state.vaultFileId);
+    const r = await decryptVault(env, p);
+    state.vaultData = r.data;
+    state.vaultKey = r.key;
+    state.vaultSalt = r.salt;
+    $('#vaultMaster').value = '';
+    renderVault();
+    toast('Vault unlocked');
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+async function saveVault() {
+  const env = await encryptVault(state.vaultData, state.vaultKey, state.vaultSalt);
+  await updateFileContent(state.vaultFileId, JSON.stringify(env));
+}
+
+function renderVault() {
+  const unlocked = !!state.vaultData;
+
+  $('#vaultState').textContent = unlocked
+    ? 'Unlocked in this browser tab only. It will lock when this page closes.'
+    : state.vaultFileId
+      ? 'Encrypted vault found in Drive. Enter the master password to unlock.'
+      : 'No vault exists yet.';
+
+  $('#vaultItems').innerHTML = unlocked
+    ? (state.vaultData.items || []).map(x =>
+        `<div class="credential"><div><b>${esc(x.label)}</b><small>${esc(x.username || x.url || 'Credential')}</small></div><button data-vault-id="${esc(x.id)}">Reveal</button></div>`
+      ).join('') || '<div class="micro">No credentials saved yet.</div>'
+    : '<div class="micro">Unlock the vault to see credentials.</div>';
+
+  $$('[data-vault-id]').forEach(b => b.onclick = () => revealVault(b.dataset.vaultId, b));
+}
+
+async function addVaultItem() {
+  if (!state.vaultData) return toast('Unlock the vault first');
+
+  const label = $('#vaultLabel').value.trim();
+  const password = $('#vaultPassword').value;
+
+  if (!label || !password) return toast('Label and password are required');
+  if (/\b(otp|cvv|seed phrase|private key|recovery phrase)\b/i.test(label)) {
+    return toast('Do not store one-time codes, CVVs, seed phrases or private keys here');
+  }
+
+  state.vaultData.items.unshift({
+    id: crypto.randomUUID(),
+    label,
+    username: $('#vaultUsername').value.trim(),
+    password,
+    url: $('#vaultUrl').value.trim(),
+    createdAt: new Date().toISOString()
+  });
+
+  await saveVault();
+  ['vaultLabel', 'vaultUsername', 'vaultPassword', 'vaultUrl'].forEach(id => $('#'+id).value = '');
+  renderVault();
+  toast('Encrypted and saved to Drive');
+}
+
+function revealVault(id, button) {
+  const x = state.vaultData?.items?.find(i => i.id === id);
+  if (!x) return;
+
+  const old = button.textContent;
+  button.textContent = x.password;
+
+  navigator.clipboard?.writeText(x.password)
+    .then(() => toast('Password copied'))
+    .catch(() => {});
+
+  setTimeout(() => button.textContent = old, 15000);
+}
+
+function lockVault() {
+  state.vaultData = null;
+  state.vaultKey = null;
+  state.vaultSalt = null;
+  $('#vaultMaster').value = '';
+  renderVault();
+  toast('Vault locked');
+}
+
+async function disconnect() {
+  try {
+    if (state.accessToken) google.accounts.oauth2.revoke(state.accessToken, () => {});
+  } catch {}
+  sessionStorage.removeItem('po_id_token');
+  location.reload();
+}
+
+function bind() {
+  $$('[data-close]').forEach(b => b.onclick = () => closeModal(b.dataset.close));
+  $$('.overlay').forEach(o => o.onclick = e => {
+    if (e.target === o) closeModal(o.id);
+  });
+
+  $$('[data-action="upload"]').forEach(b => b.onclick = () => openModal('uploadModal'));
+  $$('[data-action="library"]').forEach(b => b.onclick = () => loadLibrary(false));
+  $$('[data-action="review"]').forEach(b => b.onclick = () => loadLibrary(true));
+  $$('[data-action="vault"]').forEach(b => b.onclick = () => {
+    openModal('vaultModal');
+    renderVault();
+  });
+  $$('[data-action="sync"]').forEach(b => b.onclick = syncDrive);
+  $$('[data-action="focus-chat"]').forEach(b => b.onclick = () => {
+    $('#chatCard').scrollIntoView({ behavior: 'smooth' });
+    $('#prompt').focus();
+  });
+
+  $('#chooseFiles').onclick = () => $('#fileInput').click();
+  $('#fileInput').onchange = e => setFiles(e.target.files);
+  $('#uploadNow').onclick = uploadSelected;
+
+  ['dragenter', 'dragover'].forEach(ev =>
+    $('#dropZone').addEventListener(ev, e => {
+      e.preventDefault();
+      $('#dropZone').classList.add('drag');
+    })
+  );
+
+  ['dragleave', 'drop'].forEach(ev =>
+    $('#dropZone').addEventListener(ev, e => {
+      e.preventDefault();
+      $('#dropZone').classList.remove('drag');
+    })
+  );
+
+  $('#dropZone').addEventListener('drop', e => setFiles(e.dataTransfer.files));
+
+  $('#send').onclick = submitChat;
+  $('#prompt').onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submitChat();
+    }
+  };
+
+  $$('.suggestions button').forEach(b => b.onclick = () => {
+    $('#prompt').value = b.textContent;
+    submitChat();
+  });
+
+  let st;
+  $('#librarySearch').oninput = () => {
+    clearTimeout(st);
+    st = setTimeout(() => renderLibrary(), 180);
+  };
+
+  $('#vaultCreate').onclick = createVault;
+  $('#vaultUnlock').onclick = unlockVault;
+  $('#vaultSave').onclick = addVaultItem;
+  $('#vaultLock').onclick = lockVault;
+  $('#disconnect').onclick = disconnect;
+
+  $('#manualConnect').onclick = () =>
+    requestDriveToken('consent')
+      .then(startApp)
+      .catch(e => toast(e.message));
+}
+
+function init() {
+  bind();
+
+  if (!configured()) $('#configWarning')?.classList.remove('hidden');
+
+  const old = sessionStorage.getItem('po_id_token');
+  if (old) {
+    state.idToken = old;
+    state.user = decodeJwt(old);
+  }
+
+  waitForGoogle();
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () =>
+      navigator.serviceWorker.register('./sw.js').catch(() => {})
+    );
+  }
+}
+
 init();
 })();
