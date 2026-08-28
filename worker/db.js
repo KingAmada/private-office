@@ -13,6 +13,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_person ON messages(person_id);
 CREATE TABLE IF NOT EXISTS multipart_uploads(id TEXT PRIMARY KEY,upload_id TEXT NOT NULL,r2_key TEXT NOT NULL,original_name TEXT NOT NULL,mime TEXT,size INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'uploading');
 CREATE INDEX IF NOT EXISTS idx_multipart_created_by ON multipart_uploads(created_by);
+CREATE TABLE IF NOT EXISTS multipart_upload_meta(id TEXT PRIMARY KEY,data TEXT NOT NULL);
 `;
 export const now=()=>new Date().toISOString();
 export const plusDays=d=>new Date(Date.now()+d*86400000).toISOString();
