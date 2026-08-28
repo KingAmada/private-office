@@ -6,3 +6,12 @@ window.PRIVATE_OFFICE_CONFIG = {
   MAX_AI_FILE_MB: 8,
   SYNC_BATCH_SIZE: 8
 };
+
+(() => {
+  if (document.querySelector('script[data-private-office-mobile]')) return;
+  const script = document.createElement('script');
+  script.src = './mobile.js';
+  script.defer = true;
+  script.dataset.privateOfficeMobile = '1';
+  document.head.appendChild(script);
+})();
