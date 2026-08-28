@@ -14,6 +14,7 @@
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="stylesheet" href="./styles.css">
 <link rel="stylesheet" href="./workspace.css">
+<link rel="stylesheet" href="./batch-upload.css">
 </head>
 <body>
 <section id="access" class="accessScreen">
@@ -44,8 +45,8 @@
     <section class="chatCard"><div class="chatTop"><div><b>Office memory</b><span id="memoryStatus">Private and ready</span></div><button id="refreshFeed" class="iconButton" title="Refresh">↻</button></div><div id="feed" class="feed"></div></section>
   </main>
   <div id="attachmentPreview" class="attachmentPreview hidden"><div><span>📎</span><div><b id="attachmentName"></b><small id="attachmentSize"></small></div></div><button id="clearAttachment">×</button></div>
-  <div class="composerDock"><div class="composer"><button id="attachButton" class="attachButton" title="Attach file">＋</button><textarea id="messageInput" rows="1" placeholder="Ask, tell me, or attach anything…"></textarea><button id="sendButton" class="sendButton">↑</button></div></div>
-  <input id="fileInput" type="file" hidden>
+  <div class="composerDock"><div class="composer"><button id="attachButton" class="attachButton" title="Attach files">＋</button><textarea id="messageInput" rows="1" placeholder="Ask, tell me, or attach anything…"></textarea><button id="sendButton" class="sendButton">↑</button></div></div>
+  <input id="fileInput" type="file" multiple hidden>
   <nav class="bottomNav"><button class="active" data-nav="home"><span>⌂</span><small>Home</small></button><button data-nav="memory"><span>◫</span><small>Files</small></button><button id="navAdd" class="navAdd"><span>＋</span><small>Add</small></button><button id="peopleNav" data-nav="people"><span>♙</span><small>People</small></button><button data-nav="me"><span>○</span><small>Me</small></button></nav>
 </div>
 <div id="libraryModal" class="overlay hidden"><section class="sheet workspaceSheet"><div class="sheetHandle"></div><div class="sheetHead"><div><h2>Files</h2><p>Structured memory, original files, one private workspace.</p></div><button data-close="libraryModal">×</button></div><div class="sheetBody"><input id="librarySearch" class="hidden" aria-hidden="true"><div id="libraryList" class="hidden" aria-hidden="true"></div><div id="workspaceMount"><div class="wsEmpty"><div>◫</div><b>Opening your file workspace…</b></div></div></div></section></div>
@@ -55,5 +56,6 @@
 <script src="./config.js"></script>
 <script src="./app.js"></script>
 <script src="./workspace.js"></script>
+<script src="./batch-upload.js"></script>
 </body>
 </html>
