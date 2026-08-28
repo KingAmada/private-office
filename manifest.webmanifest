@@ -1,0 +1,9 @@
+{
+  "name": "Private Office",
+  "short_name": "Private Office",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f7f7f4",
+  "theme_color": "#f7f7f4",
+  "description": "Everything, remembered."
+}
