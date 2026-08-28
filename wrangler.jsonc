@@ -3,6 +3,12 @@
   "name": "private-office",
   "main": "worker/index.js",
   "compatibility_date": "2026-08-28",
+  "keep_vars": true,
+  "vars": {
+    "APP_ORIGINS": "https://kingamada.github.io",
+    "GOOGLE_CLIENT_ID": "785030760124-2f54hqcimk7t4kptp8ku1se21hs9f528.apps.googleusercontent.com",
+    "OPENAI_MODEL": "gpt-5.6-luna"
+  },
   "observability": {
     "enabled": true
   }
