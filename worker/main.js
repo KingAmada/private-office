@@ -106,13 +106,7 @@ async function workspace(env, user) {
     FROM files f LEFT JOIN people p ON p.id=f.created_by ${staff ? 'WHERE f.created_by=?' : ''}
     ORDER BY f.created_at DESC LIMIT 1000`;
   const files = (staff ? await env.DB.prepare(sql).bind(user.person_id).all() : await env.DB.prepare(sql).all()).results || [];
-  const mapped = files.map(f => ({
-    ...f,
-    size: Number(f.size || 0),
-    ai_used: Number(f.ai_used || 0),
-    folder_path: folderPath(f),
-    folder_parts: folderParts(f)
-  }));
+  const mapped = files.map(f => ({ ...f, size: Number(f.size || 0), ai_used: Number(f.ai_used || 0), folder_path: folderPath(f), folder_parts: folderParts(f) }));
   const categories = {}, entities = {}, types = {}, uploaders = {};
   let totalSize = 0, needsAI = 0;
   for (const f of mapped) {
@@ -123,26 +117,24 @@ async function workspace(env, user) {
     if (f.entity_name) entities[f.entity_name] = (entities[f.entity_name] || 0) + 1;
     if (f.created_by_name) uploaders[f.created_by_name] = (uploaders[f.created_by_name] || 0) + 1;
   }
-  return json({
-    files: mapped,
-    stats: { total: mapped.length, total_size: totalSize, needs_ai: needsAI, categories, entities, types, uploaders },
-    can_organize: user.role === 'owner',
-    can_delete: user.role === 'owner'
-  });
+  return json({ files: mapped, stats: { total: mapped.length, total_size: totalSize, needs_ai: needsAI, categories, entities, types, uploaders }, can_organize: user.role === 'owner', can_delete: user.role === 'owner' });
 }
 
 async function moveObject(env, row, key) {
   if (!row.r2_key || row.r2_key === key) return false;
   const object = await env.FILES.get(row.r2_key);
   if (!object) return false;
-  await env.FILES.put(key, object.body, {
-    httpMetadata: object.httpMetadata,
-    customMetadata: object.customMetadata
-  });
+  await env.FILES.put(key, object.body, { httpMetadata: object.httpMetadata, customMetadata: object.customMetadata });
   await env.FILES.delete(row.r2_key);
   await env.DB.prepare('UPDATE files SET r2_key=? WHERE id=?').bind(key, row.id).run();
   row.r2_key = key;
   return true;
+}
+
+async function normalizeStoredFile(env, id) {
+  const row = await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(id).first();
+  if (!row) return false;
+  return moveObject(env, row, desiredKey(row));
 }
 
 async function reclassify(env, row) {
@@ -152,24 +144,9 @@ async function reclassify(env, row) {
   const source = new File([bytes], row.original_name || row.stored_name || 'document', { type: row.mime || 'application/octet-stream' });
   const c = await classify(env, bytes, source);
   const stored = filename(row.original_name, c.suggested_filename || c.title || row.original_name);
-  const updated = {
-    ...row,
-    stored_name: stored,
-    category: c.category || 'Other',
-    document_type: c.document_type || 'Document',
-    title: c.title || base(row.original_name),
-    summary: c.summary || '',
-    search_text: c.search_text || row.search_text || row.original_name,
-    entity_name: c.entity_name || null,
-    document_date: c.document_date || null,
-    expiry_date: c.expiry_date || null,
-    ai_used: 1
-  };
+  const updated = { ...row, stored_name: stored, category: c.category || 'Other', document_type: c.document_type || 'Document', title: c.title || base(row.original_name), summary: c.summary || '', search_text: c.search_text || row.search_text || row.original_name, entity_name: c.entity_name || null, document_date: c.document_date || null, expiry_date: c.expiry_date || null, ai_used: 1 };
   const key = desiredKey(updated);
-  await env.FILES.put(key, bytes, {
-    httpMetadata: { contentType: row.mime || 'application/octet-stream' },
-    customMetadata: { original_name: safe(row.original_name), uploaded_by: row.created_by }
-  });
+  await env.FILES.put(key, bytes, { httpMetadata: { contentType: row.mime || 'application/octet-stream' }, customMetadata: { original_name: safe(row.original_name), uploaded_by: row.created_by } });
   if (row.r2_key !== key) await env.FILES.delete(row.r2_key);
   await env.DB.prepare(`UPDATE files SET r2_key=?,stored_name=?,category=?,document_type=?,title=?,summary=?,search_text=?,entity_name=?,document_date=?,expiry_date=?,ai_used=1 WHERE id=?`)
     .bind(key,stored,updated.category,updated.document_type,updated.title,updated.summary,updated.search_text,updated.entity_name,updated.document_date,updated.expiry_date,row.id).run();
@@ -190,11 +167,9 @@ async function organize(req, env, user) {
       const needsAI = !Number(row.ai_used || 0);
       const shouldDeep = deep && report.ai_reads < aiLimit;
       if ((needsAI || shouldDeep) && report.ai_reads < aiLimit) {
-        const beforeName = row.stored_name;
-        const beforeFolder = folderPath(row);
+        const beforeName = row.stored_name, beforeFolder = folderPath(row);
         row = await reclassify(env, row);
-        report.ai_reads++;
-        report.reclassified++;
+        report.ai_reads++; report.reclassified++;
         if (beforeName !== row.stored_name) report.renamed++;
         const afterFolder = folderPath(row);
         if (beforeFolder !== afterFolder || original.r2_key !== row.r2_key) report.moved++;
@@ -206,9 +181,7 @@ async function organize(req, env, user) {
         report.moved++;
         if (report.examples.length < 8) report.examples.push({ from: row.stored_name, to: row.stored_name, folder: folderPath(row) });
       } else report.skipped++;
-    } catch (e) {
-      if (report.errors.length < 8) report.errors.push(String(e?.message || e));
-    }
+    } catch (e) { if (report.errors.length < 8) report.errors.push(String(e?.message || e)); }
   }
   await message(env, { role: 'system', text: `${user.name || 'Owner'} organized Private Office: ${report.moved} moved, ${report.reclassified} reclassified, ${report.ai_reads} AI reads.` });
   return json({ ok: true, report });
@@ -219,28 +192,23 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req, env) });
     try {
       await ensure(env);
-      const url = new URL(req.url);
-      const path = url.pathname;
+      const url = new URL(req.url), path = url.pathname;
 
       if (req.method === 'DELETE' && path.startsWith('/api/files/')) {
         const user = await auth(req, env);
         if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
-        const id = decodeURIComponent(path.slice('/api/files/'.length));
-        return wrap(await removeFile(env, user, id), req, env);
+        return wrap(await removeFile(env, user, decodeURIComponent(path.slice('/api/files/'.length))), req, env);
       }
-
       if (req.method === 'GET' && path === '/api/workspace') {
         const user = await auth(req, env);
         if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
         return wrap(await workspace(env, user), req, env);
       }
-
       if (req.method === 'POST' && path === '/api/organize') {
         const user = await auth(req, env);
         if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
         return wrap(await organize(req, env, user), req, env);
       }
-
       if (req.method === 'POST' && path === '/api/message') {
         const clone = req.clone();
         const fd = await clone.formData();
@@ -251,8 +219,17 @@ export default {
           if (!user) return wrap(json({ error: 'Private session required' }, 401), req, env);
           return wrap(await retrieve(req, env, user, text), req, env);
         }
+        if (upload instanceof File && upload.size) {
+          const response = await core.fetch(req, env);
+          if (response.ok) {
+            try {
+              const data = await response.clone().json();
+              if (data?.file?.id) await normalizeStoredFile(env, data.file.id);
+            } catch {}
+          }
+          return wrap(response, req, env);
+        }
       }
-
       return wrap(await core.fetch(req, env), req, env);
     } catch (e) {
       return wrap(json({ error: e?.message || 'Private Office error' }, e?.status || 500), req, env);
