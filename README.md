@@ -38,7 +38,6 @@ The AI gateway exists for one reason: **an OpenAI API key must never be put into
 - `config.js` — public runtime configuration (Google client ID + AI gateway URL only)
 - `worker/index.js` — tiny serverless OpenAI gateway; no Node server
 - `manifest.webmanifest` + `sw.js` — installable PWA shell
-- `.github/workflows/pages.yml` — GitHub Pages deployment
 
 ## 1. Google Cloud setup
 
@@ -94,11 +93,11 @@ AI_GATEWAY_URL: 'https://private-office-ai.example.workers.dev'
 
 ## 3. GitHub Pages
 
-The included workflow uploads the repository root as a GitHub Pages artifact. In the repository:
+The application is static and lives at the repository root. In the repository:
 
 1. Open **Settings → Pages**.
-2. Set **Source** to **GitHub Actions**.
-3. Push to `main` (the workflow also runs manually).
+2. Under **Build and deployment**, choose **Deploy from a branch**.
+3. Choose branch **main** and folder **/(root)**, then save.
 
 For this repository the expected URL will normally be:
 
