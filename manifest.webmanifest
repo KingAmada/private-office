@@ -1,13 +1,11 @@
 {
-  "name": "Private Office",
-  "short_name": "Private Office",
-  "start_url": "./",
-  "scope": "./",
-  "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
-  "orientation": "portrait-primary",
-  "background_color": "#f7f7f4",
-  "theme_color": "#f7f7f4",
-  "description": "Everything, remembered.",
-  "categories": ["productivity", "utilities"]
+  "name":"Private Office — Everything, remembered.",
+  "short_name":"Private Office",
+  "start_url":"./",
+  "scope":"./",
+  "display":"standalone",
+  "orientation":"portrait-primary",
+  "background_color":"#f6f5ef",
+  "theme_color":"#f6f5ef",
+  "description":"A private shared office memory for messages, documents and files."
 }
