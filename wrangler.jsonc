@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "private-office",
-  "main": "worker/index.js",
+  "main": "worker/main.js",
   "compatibility_date": "2026-08-28",
   "keep_vars": true,
   "vars": {
