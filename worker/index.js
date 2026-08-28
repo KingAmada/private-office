@@ -1,7 +1,7 @@
 const OPENAI='https://api.openai.com/v1';
 let jwksCache={at:0,keys:[]};
 function normalizeOrigin(value){try{return new URL(String(value||'').trim()).origin}catch{return String(value||'').trim().replace(/\/$/,'')}}
-function allowedOrigins(env){return String(env.APP_ORIGINS||'').split(',').map(normalizeOrigin).filter(Boolean)}
+function allowedOrigins(env){return String(env.APP_ORIGINS||'https://kingamada.github.io').split(',').map(normalizeOrigin).filter(Boolean)}
 function originAllowed(origin,env){return allowedOrigins(env).includes(normalizeOrigin(origin))}
 function cors(origin,env){const clean=normalizeOrigin(origin),ok=originAllowed(clean,env);return {'Access-Control-Allow-Origin':ok?clean:'null','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Max-Age':'86400','Vary':'Origin','Content-Type':'application/json'} }
 function json(data,status,origin,env){return new Response(JSON.stringify(data),{status,headers:cors(origin,env)})}
