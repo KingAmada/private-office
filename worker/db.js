@@ -11,6 +11,8 @@ CREATE INDEX IF NOT EXISTS idx_files_created_by ON files(created_by);
 CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,thread_id TEXT NOT NULL,person_id TEXT,role TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',file_id TEXT,visible_to_person_id TEXT,created_at TEXT NOT NULL,reply_to TEXT);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_person ON messages(person_id);
+CREATE TABLE IF NOT EXISTS multipart_uploads(id TEXT PRIMARY KEY,upload_id TEXT NOT NULL,r2_key TEXT NOT NULL,original_name TEXT NOT NULL,mime TEXT,size INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',created_by TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'uploading');
+CREATE INDEX IF NOT EXISTS idx_multipart_created_by ON multipart_uploads(created_by);
 `;
 export const now=()=>new Date().toISOString();
 export const plusDays=d=>new Date(Date.now()+d*86400000).toISOString();
