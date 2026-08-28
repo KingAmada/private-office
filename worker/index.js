@@ -37,7 +37,13 @@ function wrap(res, req, env) {
 
 const isQuestion = t => /\?$/.test(String(t).trim()) || /^(what|where|when|who|which|how|why|find|show|tell|do i|did i|have i|is there|are there|can you|give me|bring me)\b/i.test(String(t).trim());
 const recentIntent = q => /\b(just|last|latest|newest|recent|recently|today|this morning|this afternoon|this evening|uploaded|upload|sent|send|added|add)\b/i.test(String(q || ''));
-const directLatestFileQuestion = q => /\b(what|which|show|find|give|bring)\b.*\b(file|document|photo|image|thing)\b.*\b(just|last|latest|recent|uploaded|sent|added)\b|\bwhat did i just (upload|send|add)\b|\bwhat file did i just upload\b/i.test(String(q || ''));
+const directLatestFileQuestion = q => {
+  const s = String(q || '').trim();
+  return /\b(what|which|show|find|give|bring)\b.*\b(file|document|photo|image|thing)\b.*\b(just|last|latest|newest|recent|uploaded|sent|added)\b/i.test(s) ||
+    /\bwhat\s+(?:did\s+i\s+)?(?:just\s+)?(?:upload|send|add)\b/i.test(s) ||
+    /\bwhat\s+(?:was|is)\s+(?:the\s+)?(?:last|latest|newest|most\s+recent)\s+(?:file|document|photo|image|thing\s+)?(?:uploaded|sent|added)?\b/i.test(s) ||
+    /\bwhat\s+was\s+last\s+(?:uploaded|sent|added)\b/i.test(s);
+};
 
 function searchTerms(q) {
   const stop = new Set([
@@ -60,7 +66,6 @@ async function memory(env, user, q) {
   const recent = recentIntent(q);
   const terms = searchTerms(q);
   const staff = user.role === 'staff';
-
   let files = [];
   let msgs = [];
 
@@ -137,7 +142,8 @@ async function fileObj(env, f) {
     title: f.title,
     summary: f.summary,
     entity_name: f.entity_name,
-    created_at: f.created_at
+    created_at: f.created_at,
+    ai_used: Number(f.ai_used || 0)
   } : null;
 }
 
@@ -149,7 +155,6 @@ function objectKey(id, stored, category, entity) {
 
 async function repairClassification(env, row, providedBytes = null) {
   if (!row || Number(row.ai_used) === 1) return row;
-
   let bytes = providedBytes;
   if (!bytes) {
     const object = await env.FILES.get(row.r2_key);
@@ -182,6 +187,15 @@ async function repairClassification(env, row, providedBytes = null) {
   return await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(row.id).first();
 }
 
+async function repairStoredFile(env, user, id) {
+  let row = await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(id).first();
+  if (!row) return json({ error: 'File not found' }, 404);
+  if (user.role === 'staff' && row.created_by !== user.person_id) return json({ error: 'Not authorized for this file' }, 403);
+  if (Number(row.ai_used) === 1) return json({ ok: true, already_classified: true, file: await fileObj(env, row) });
+  row = await repairClassification(env, row);
+  return json({ ok: true, file: await fileObj(env, row) });
+}
+
 async function bootstrap(req, env) {
   if (!env.SETUP_KEY) return json({ error: 'SETUP_KEY secret is not configured' }, 503);
   const body = await req.json();
@@ -209,7 +223,7 @@ async function feed(env, user) {
   const where = user.role === 'staff' ? 'WHERE (m.person_id=? OR m.visible_to_person_id=?)' : '';
   const st = env.DB.prepare(`
     SELECT m.id,m.role,m.text,m.created_at,m.person_id,m.file_id,p.name person_name,
-           f.stored_name,f.original_name,f.mime,f.size,f.category,f.document_type,f.title,f.summary,f.entity_name,f.created_at file_created_at
+           f.stored_name,f.original_name,f.mime,f.size,f.category,f.document_type,f.title,f.summary,f.entity_name,f.created_at file_created_at,f.ai_used
     FROM messages m LEFT JOIN people p ON p.id=m.person_id LEFT JOIN files f ON f.id=m.file_id
     ${where} ORDER BY m.created_at DESC LIMIT 120`);
   const rows = (user.role === 'staff' ? await st.bind(user.person_id, user.person_id).all() : await st.all()).results || [];
@@ -219,7 +233,7 @@ async function feed(env, user) {
     file: x.file_id ? {
       id: x.file_id, name: x.stored_name, original_name: x.original_name, mime: x.mime, size: x.size,
       category: x.category, document_type: x.document_type, title: x.title, summary: x.summary,
-      entity_name: x.entity_name, created_at: x.file_created_at
+      entity_name: x.entity_name, created_at: x.file_created_at, ai_used: Number(x.ai_used || 0)
     } : null
   })) });
 }
@@ -334,7 +348,7 @@ async function library(env, user, url) {
     clauses.push('(stored_name LIKE ? OR title LIKE ? OR summary LIKE ? OR entity_name LIKE ? OR category LIKE ?)');
     args.push(x,x,x,x,x);
   }
-  let sql = 'SELECT id,original_name,stored_name,mime,size,category,document_type,title,summary,entity_name,created_at,created_by FROM files';
+  let sql = 'SELECT id,original_name,stored_name,mime,size,category,document_type,title,summary,entity_name,created_at,created_by,ai_used FROM files';
   if (clauses.length) sql += ' WHERE ' + clauses.join(' AND ');
   sql += ' ORDER BY created_at DESC LIMIT 150';
   return json({ files: (await env.DB.prepare(sql).bind(...args).all()).results || [] });
@@ -401,6 +415,10 @@ async function route(req, env) {
   if (req.method === 'GET' && path === '/api/feed') return feed(env, me);
   if (req.method === 'POST' && path === '/api/message') return send(req, env, me);
   if (req.method === 'GET' && path === '/api/library') return library(env, me, url);
+  if (req.method === 'POST' && path.startsWith('/api/files/') && path.endsWith('/repair')) {
+    const id = decodeURIComponent(path.slice('/api/files/'.length, -'/repair'.length));
+    return repairStoredFile(env, me, id);
+  }
   if (req.method === 'GET' && path.startsWith('/api/files/')) return download(env, me, decodeURIComponent(path.slice(11)));
   if (req.method === 'GET' && path === '/api/people') return people(env, me);
   if (req.method === 'POST' && path === '/api/invites') return invite(req, env, me);
