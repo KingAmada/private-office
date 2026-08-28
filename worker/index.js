@@ -1,25 +1,421 @@
-import{ensure,auth,role,session,message,hash,token,uid,now,plusDays,INVITE_DAYS}from'./db.js';
-import{classify,answer}from'./ai.js';
-const MAX=12*1024*1024;
-const safe=s=>String(s||'Document').replace(/[\\/:*?"<>|\u0000-\u001F]/g,' ').replace(/\s+/g,' ').trim().slice(0,120)||'Document';
-const ext=n=>(String(n||'').match(/(\.[A-Za-z0-9]{1,8})$/)||['',''])[1].toLowerCase();
-const base=n=>ext(n)?String(n).slice(0,-ext(n).length):String(n||'Document');
-const filename=(orig,want)=>`${safe(base(want||orig)).replace(/^[-_. ]+|[-_. ]+$/g,'').slice(0,105)||'Document'}${ext(orig)}`;
-const J=(d,s=200,h={})=>new Response(JSON.stringify(d),{status:s,headers:{'Content-Type':'application/json; charset=utf-8',...h}});
-const origins=e=>String(e.APP_ORIGINS||'https://kingamada.github.io').split(',').map(x=>x.trim().replace(/\/$/,'')).filter(Boolean);
-const cors=(r,e)=>{const o=(r.headers.get('Origin')||'').replace(/\/$/,'');const a=origins(e);return{'Access-Control-Allow-Origin':a.includes(o)?o:a[0]||'null','Access-Control-Allow-Headers':'authorization,content-type','Access-Control-Allow-Methods':'GET,POST,OPTIONS','Access-Control-Max-Age':'86400','Vary':'Origin'}};
-const wrap=(res,r,e)=>{const h=new Headers(res.headers);for(const[k,v]of Object.entries(cors(r,e)))h.set(k,v);return new Response(res.body,{status:res.status,headers:h})};
-const question=t=>/\?$/.test(String(t).trim())||/^(what|where|when|who|which|how|why|find|show|tell|do i|did i|have i|is there|are there|can you|give me|bring me)\b/i.test(String(t).trim());
-async function memory(env,user,q){const stop=new Set(['what','where','when','who','which','how','why','find','show','tell','give','bring','can','could','would','should','do','did','does','have','has','had','is','are','was','were','me','my','i','the','a','an','about','of','to','in','on','for','from','with','documents','document','files','file','records','record','memory','recent','latest','today','please']);const terms=[...new Set(String(q||'').toLowerCase().match(/[a-z0-9]{2,}/g)||[])].filter(x=>!stop.has(x)).slice(0,8);const like=terms.length?`%${terms[terms.length-1]}%`:'%';const files=(await env.DB.prepare(`SELECT id,stored_name,title,category,document_type,summary,search_text,entity_name,document_date,expiry_date,created_by FROM files WHERE (stored_name LIKE ? OR title LIKE ? OR summary LIKE ? OR search_text LIKE ? OR entity_name LIKE ?) ${user.role==='staff'?'AND created_by=?':''} ORDER BY created_at DESC LIMIT 8`).bind(...(user.role==='staff'?[like,like,like,like,like,user.person_id]:[like,like,like,like,like])).all()).results||[];const msgs=(await env.DB.prepare(`SELECT m.text,m.created_at,m.person_id,p.name FROM messages m LEFT JOIN people p ON p.id=m.person_id WHERE m.text LIKE ? ${user.role==='staff'?'AND m.person_id=?':''} ORDER BY m.created_at DESC LIMIT 8`).bind(...(user.role==='staff'?[like,user.person_id]:[like])).all()).results||[];return[...files.map(x=>({kind:'file',...x})),...msgs.map(x=>({kind:'message',text:x.text,created_at:x.created_at,person:x.name||'Private Office'}))].slice(0,10)}
-async function fileObj(env,f){return f?{id:f.id,name:f.stored_name,original_name:f.original_name,mime:f.mime,size:f.size,category:f.category,document_type:f.document_type,title:f.title,summary:f.summary,entity_name:f.entity_name,created_at:f.created_at}:null}
-async function bootstrap(r,e){if(!e.SETUP_KEY)return J({error:'SETUP_KEY secret is not configured'},503);const b=await r.json();if(String(b.setup_key||'')!==String(e.SETUP_KEY))return J({error:'Invalid setup key'},403);if(await e.DB.prepare("SELECT id FROM people WHERE role='owner' AND active=1 LIMIT 1").first())return J({error:'Owner access already exists'},409);const pid=uid(),t=now(),name=safe(b.name||'Owner');await e.DB.prepare("INSERT INTO people(id,name,role,active,created_at) VALUES(?,?,'owner',1,?)").bind(pid,name,t).run();const s=await session(e,pid,b.device_label||'Owner device');await message(e,{role:'system',text:`${name} created Private Office.`});return J({session_token:s,person:{id:pid,name,role:'owner'}})}
-async function acceptInvite(r,e){const b=await r.json(),h=await hash(b.token||'');const x=await e.DB.prepare(`SELECT i.id,i.person_id,i.expires_at,i.revoked_at,p.name,p.role,p.active FROM invites i JOIN people p ON p.id=i.person_id WHERE i.token_hash=? LIMIT 1`).bind(h).first();if(!x||x.revoked_at||!x.active||(x.expires_at&&Date.parse(x.expires_at)<=Date.now()))return J({error:'This private link is invalid, expired or revoked'},403);const s=await session(e,x.person_id,b.device_label||'Private Office device');await e.DB.prepare('UPDATE invites SET use_count=use_count+1 WHERE id=?').bind(x.id).run();return J({session_token:s,person:{id:x.person_id,name:x.name,role:x.role}})}
-async function feed(e,u){const w=u.role==='staff'?'WHERE (m.person_id=? OR m.visible_to_person_id=?)':'';const st=e.DB.prepare(`SELECT m.id,m.role,m.text,m.created_at,m.person_id,m.file_id,p.name person_name,f.stored_name,f.original_name,f.mime,f.size,f.category,f.document_type,f.title,f.summary,f.entity_name,f.created_at file_created_at FROM messages m LEFT JOIN people p ON p.id=m.person_id LEFT JOIN files f ON f.id=m.file_id ${w} ORDER BY m.created_at DESC LIMIT 120`);const rows=(u.role==='staff'?await st.bind(u.person_id,u.person_id).all():await st.all()).results||[];return J({messages:rows.reverse().map(x=>({id:x.id,role:x.role,text:x.text,created_at:x.created_at,person:x.person_name||(x.role==='assistant'?'Private Office':'System'),file:x.file_id?{id:x.file_id,name:x.stored_name,original_name:x.original_name,mime:x.mime,size:x.size,category:x.category,document_type:x.document_type,title:x.title,summary:x.summary,entity_name:x.entity_name,created_at:x.file_created_at}:null}))})}
-async function send(r,e,u){const fd=await r.formData(),txt=String(fd.get('text')||'').trim().slice(0,30000),up=fd.get('file');if(!txt&&!(up instanceof File&&up.size))return J({error:'Write a message or attach a file'},400);let f=null,fid=null,dup=false;if(up instanceof File&&up.size){if(up.size>MAX)return J({error:'File is too large. Maximum is 12 MB.'},413);const bytes=await up.arrayBuffer(),sha=await hash(bytes);f=await e.DB.prepare('SELECT * FROM files WHERE sha256=? LIMIT 1').bind(sha).first();if(f){fid=f.id;dup=true}else{let c;try{c=await classify(e,bytes,up)}catch{c={suggested_filename:up.name,document_type:'Document',category:'Other',title:base(up.name),summary:'Stored safely. AI classification can be retried later.',search_text:`${up.name} ${txt}`,entity_name:null,document_date:null,expiry_date:null}}fid=uid();const stored=filename(up.name,c.suggested_filename||c.title||up.name),cat=safe(c.category||'Other'),ent=c.entity_name?safe(c.entity_name):'',key=`${cat}/${ent?ent+'/':''}${new Date().toISOString().slice(0,10)}/${fid}-${stored}`;await e.FILES.put(key,bytes,{httpMetadata:{contentType:up.type||'application/octet-stream'},customMetadata:{original_name:safe(up.name),uploaded_by:u.person_id}});const t=now();await e.DB.prepare(`INSERT INTO files(id,r2_key,original_name,stored_name,mime,size,sha256,category,document_type,title,summary,search_text,entity_name,document_date,expiry_date,created_by,created_at,ai_used) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(fid,key,safe(up.name),stored,up.type||'application/octet-stream',up.size,sha,c.category||'Other',c.document_type||'Document',c.title||base(up.name),c.summary||'',c.search_text||`${up.name} ${txt}`,c.entity_name||null,c.document_date||null,c.expiry_date||null,u.person_id,t,c.summary?.startsWith('Stored safely')?0:1).run();f=await e.DB.prepare('SELECT * FROM files WHERE id=?').bind(fid).first()}}let reply;if(f)reply=dup?`Remembered. This is the same file already stored as “${f.stored_name}”. I linked this new message to it.`:`Remembered. I filed it as “${f.stored_name}” under ${f.category||'Other'}${f.entity_name?` → ${f.entity_name}`:''}.`;else if(question(txt))reply=await answer(e,txt,await memory(e,u,txt));else reply='Remembered.';const m=await message(e,{personId:u.person_id,role:'user',text:txt,fileId:fid});await message(e,{role:'assistant',text:reply,visibleTo:u.role==='staff'?u.person_id:null,replyTo:m.id});return J({ok:true,reply,file:await fileObj(e,f)})}
-async function library(e,u,url){const q=(url.searchParams.get('q')||'').trim(),clauses=[],b=[];if(u.role==='staff'){clauses.push('created_by=?');b.push(u.person_id)}if(q){const x=`%${q}%`;clauses.push('(stored_name LIKE ? OR title LIKE ? OR summary LIKE ? OR entity_name LIKE ? OR category LIKE ?)');b.push(x,x,x,x,x)}let sql='SELECT id,original_name,stored_name,mime,size,category,document_type,title,summary,entity_name,created_at,created_by FROM files';if(clauses.length)sql+=' WHERE '+clauses.join(' AND ');sql+=' ORDER BY created_at DESC LIMIT 150';return J({files:(await e.DB.prepare(sql).bind(...b).all()).results||[]})}
-async function download(e,u,id){const f=await e.DB.prepare('SELECT * FROM files WHERE id=?').bind(id).first();if(!f)return J({error:'File not found'},404);if(u.role==='staff'&&f.created_by!==u.person_id)return J({error:'Not authorized for this file'},403);const o=await e.FILES.get(f.r2_key);if(!o)return J({error:'Stored object is missing'},404);const h=new Headers();o.writeHttpMetadata(h);h.set('Content-Type',f.mime||h.get('Content-Type')||'application/octet-stream');h.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(f.stored_name)}`);h.set('Cache-Control','private, no-store');return new Response(o.body,{headers:h})}
-async function people(e,u){role(u,['owner']);const t=now();return J({people:(await e.DB.prepare(`SELECT p.id,p.name,p.role,p.active,p.created_at,(SELECT COUNT(*) FROM sessions s WHERE s.person_id=p.id AND s.revoked_at IS NULL AND s.expires_at>?) sessions FROM people p ORDER BY p.created_at`).bind(t).all()).results||[]})}
-async function invite(r,e,u){role(u,['owner']);const b=await r.json(),rr=['assistant','staff'].includes(b.role)?b.role:'staff',name=safe(b.name||'Staff'),pid=uid(),iid=uid(),raw=token(32),t=now();await e.DB.prepare('INSERT INTO people(id,name,role,active,created_at) VALUES(?,?,?,1,?)').bind(pid,name,rr,t).run();await e.DB.prepare('INSERT INTO invites(id,person_id,token_hash,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?)').bind(iid,pid,await hash(raw),u.person_id,t,plusDays(Number(b.expires_days||INVITE_DAYS))).run();const base=String(e.APP_URL||'https://kingamada.github.io/private-office/').replace(/\?.*$/,'');return J({invite:{id:iid,person_id:pid,name,role:rr,url:`${base}?invite=${encodeURIComponent(raw)}`}})}
-async function revoke(r,e,u){role(u,['owner']);const b=await r.json(),pid=String(b.person_id||'');if(!pid||pid===u.person_id)return J({error:'You cannot revoke your own owner session here'},400);const t=now();await e.DB.batch([e.DB.prepare('UPDATE people SET active=0 WHERE id=?').bind(pid),e.DB.prepare('UPDATE sessions SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL').bind(t,pid),e.DB.prepare('UPDATE invites SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL').bind(t,pid)]);return J({ok:true})}
-async function route(r,e){await ensure(e);const u=new URL(r.url),p=u.pathname;if(r.method==='GET'&&(p==='/'||p==='/api/health'))return J({ok:true,service:'Private Office',storage:!!e.FILES,database:!!e.DB});if(r.method==='POST'&&p==='/api/bootstrap')return bootstrap(r,e);if(r.method==='POST'&&p==='/api/invite/accept')return acceptInvite(r,e);const me=await auth(r,e);if(!me)return J({error:'Private session required'},401);if(r.method==='GET'&&p==='/api/me')return J({person:{id:me.person_id,name:me.name,role:me.role}});if(r.method==='GET'&&p==='/api/feed')return feed(e,me);if(r.method==='POST'&&p==='/api/message')return send(r,e,me);if(r.method==='GET'&&p==='/api/library')return library(e,me,u);if(r.method==='GET'&&p.startsWith('/api/files/'))return download(e,me,decodeURIComponent(p.slice(11)));if(r.method==='GET'&&p==='/api/people')return people(e,me);if(r.method==='POST'&&p==='/api/invites')return invite(r,e,me);if(r.method==='POST'&&p==='/api/people/revoke')return revoke(r,e,me);if(r.method==='POST'&&p==='/api/logout'){await e.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(now(),me.session_id).run();return J({ok:true})}return J({error:'Not found'},404)}
-export default{async fetch(r,e){if(r.method==='OPTIONS')return new Response(null,{status:204,headers:cors(r,e)});try{return wrap(await route(r,e),r,e)}catch(x){return wrap(J({error:x?.message||'Private Office error'},x?.status||500),r,e)}}};
+import { ensure, auth, role, session, message, hash, token, uid, now, plusDays, INVITE_DAYS } from './db.js';
+import { classify, answer } from './ai.js';
+
+const MAX = 12 * 1024 * 1024;
+
+const safe = s => String(s || 'Document')
+  .replace(/[\\/:*?"<>|\u0000-\u001F]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, 120) || 'Document';
+
+const ext = n => (String(n || '').match(/(\.[A-Za-z0-9]{1,8})$/) || ['', ''])[1].toLowerCase();
+const base = n => ext(n) ? String(n).slice(0, -ext(n).length) : String(n || 'Document');
+const filename = (orig, want) => `${safe(base(want || orig)).replace(/^[-_. ]+|[-_. ]+$/g, '').slice(0, 105) || 'Document'}${ext(orig)}`;
+const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', ...headers } });
+
+const origins = env => String(env.APP_ORIGINS || 'https://kingamada.github.io')
+  .split(',').map(x => x.trim().replace(/\/$/, '')).filter(Boolean);
+
+function cors(req, env) {
+  const origin = (req.headers.get('Origin') || '').replace(/\/$/, '');
+  const allowed = origins(env);
+  return {
+    'Access-Control-Allow-Origin': allowed.includes(origin) ? origin : allowed[0] || 'null',
+    'Access-Control-Allow-Headers': 'authorization,content-type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin'
+  };
+}
+
+function wrap(res, req, env) {
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(cors(req, env))) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
+}
+
+const isQuestion = t => /\?$/.test(String(t).trim()) || /^(what|where|when|who|which|how|why|find|show|tell|do i|did i|have i|is there|are there|can you|give me|bring me)\b/i.test(String(t).trim());
+const recentIntent = q => /\b(just|last|latest|newest|recent|recently|today|this morning|this afternoon|this evening|uploaded|upload|sent|send|added|add)\b/i.test(String(q || ''));
+const directLatestFileQuestion = q => /\b(what|which|show|find|give|bring)\b.*\b(file|document|photo|image|thing)\b.*\b(just|last|latest|recent|uploaded|sent|added)\b|\bwhat did i just (upload|send|add)\b|\bwhat file did i just upload\b/i.test(String(q || ''));
+
+function searchTerms(q) {
+  const stop = new Set([
+    'what','where','when','who','which','how','why','find','show','tell','give','bring','can','could','would','should',
+    'do','did','does','have','has','had','is','are','was','were','me','my','i','the','a','an','about','of','to','in','on',
+    'for','from','with','documents','document','files','file','records','record','memory','please'
+  ]);
+  return [...new Set(String(q || '').toLowerCase().match(/[a-z0-9]{2,}/g) || [])]
+    .filter(x => !stop.has(x)).slice(0, 7);
+}
+
+function scoreRow(row, terms) {
+  if (!terms.length) return 1;
+  const hay = [row.stored_name,row.original_name,row.title,row.category,row.document_type,row.summary,row.search_text,row.entity_name,row.created_by_name,row.text,row.person]
+    .filter(Boolean).join(' ').toLowerCase();
+  return terms.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
+}
+
+async function memory(env, user, q) {
+  const recent = recentIntent(q);
+  const terms = searchTerms(q);
+  const staff = user.role === 'staff';
+
+  let files = [];
+  let msgs = [];
+
+  if (recent || !terms.length) {
+    const fileSql = `
+      SELECT f.id,f.r2_key,f.original_name,f.stored_name,f.mime,f.size,f.category,f.document_type,f.title,
+             f.summary,f.search_text,f.entity_name,f.document_date,f.expiry_date,f.created_by,f.created_at,f.ai_used,
+             p.name created_by_name
+      FROM files f LEFT JOIN people p ON p.id=f.created_by
+      ${staff ? 'WHERE f.created_by=?' : ''}
+      ORDER BY f.created_at DESC LIMIT 8`;
+    files = (staff
+      ? await env.DB.prepare(fileSql).bind(user.person_id).all()
+      : await env.DB.prepare(fileSql).all()).results || [];
+
+    const msgSql = `
+      SELECT m.text,m.created_at,m.person_id,p.name person
+      FROM messages m LEFT JOIN people p ON p.id=m.person_id
+      ${staff ? 'WHERE m.person_id=?' : ''}
+      ORDER BY m.created_at DESC LIMIT 10`;
+    msgs = (staff
+      ? await env.DB.prepare(msgSql).bind(user.person_id).all()
+      : await env.DB.prepare(msgSql).all()).results || [];
+  } else {
+    const fileGroup = terms.map(() => '(f.stored_name LIKE ? OR f.original_name LIKE ? OR f.title LIKE ? OR f.summary LIKE ? OR f.search_text LIKE ? OR f.entity_name LIKE ? OR p.name LIKE ?)').join(' OR ');
+    const fileArgs = terms.flatMap(t => Array(7).fill(`%${t}%`));
+    if (staff) fileArgs.push(user.person_id);
+    const fileSql = `
+      SELECT f.id,f.r2_key,f.original_name,f.stored_name,f.mime,f.size,f.category,f.document_type,f.title,
+             f.summary,f.search_text,f.entity_name,f.document_date,f.expiry_date,f.created_by,f.created_at,f.ai_used,
+             p.name created_by_name
+      FROM files f LEFT JOIN people p ON p.id=f.created_by
+      WHERE (${fileGroup}) ${staff ? 'AND f.created_by=?' : ''}
+      ORDER BY f.created_at DESC LIMIT 24`;
+    files = (await env.DB.prepare(fileSql).bind(...fileArgs).all()).results || [];
+
+    const msgGroup = terms.map(() => '(m.text LIKE ? OR p.name LIKE ?)').join(' OR ');
+    const msgArgs = terms.flatMap(t => [`%${t}%`, `%${t}%`]);
+    if (staff) msgArgs.push(user.person_id);
+    const msgSql = `
+      SELECT m.text,m.created_at,m.person_id,p.name person
+      FROM messages m LEFT JOIN people p ON p.id=m.person_id
+      WHERE (${msgGroup}) ${staff ? 'AND m.person_id=?' : ''}
+      ORDER BY m.created_at DESC LIMIT 24`;
+    msgs = (await env.DB.prepare(msgSql).bind(...msgArgs).all()).results || [];
+  }
+
+  const fileRows = files.map(x => ({ kind: 'file', ...x, _score: scoreRow(x, terms) }));
+  const msgRows = msgs.map(x => ({ kind: 'message', text: x.text, created_at: x.created_at, person: x.person || 'Private Office', _score: scoreRow(x, terms) }));
+
+  if (recent) {
+    return [...fileRows, ...msgRows]
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+      .slice(0, 12)
+      .map(({ _score, ...x }) => x);
+  }
+
+  return [...fileRows, ...msgRows]
+    .filter(x => x._score > 0)
+    .sort((a, b) => b._score - a._score || String(b.created_at).localeCompare(String(a.created_at)))
+    .slice(0, 10)
+    .map(({ _score, ...x }) => x);
+}
+
+async function fileObj(env, f) {
+  return f ? {
+    id: f.id,
+    name: f.stored_name,
+    original_name: f.original_name,
+    mime: f.mime,
+    size: f.size,
+    category: f.category,
+    document_type: f.document_type,
+    title: f.title,
+    summary: f.summary,
+    entity_name: f.entity_name,
+    created_at: f.created_at
+  } : null;
+}
+
+function objectKey(id, stored, category, entity) {
+  const cat = safe(category || 'Other');
+  const ent = entity ? `${safe(entity)}/` : '';
+  return `${cat}/${ent}${new Date().toISOString().slice(0,10)}/${id}-${stored}`;
+}
+
+async function repairClassification(env, row, providedBytes = null) {
+  if (!row || Number(row.ai_used) === 1) return row;
+
+  let bytes = providedBytes;
+  if (!bytes) {
+    const object = await env.FILES.get(row.r2_key);
+    if (!object) return row;
+    bytes = await object.arrayBuffer();
+  }
+
+  const file = new File([bytes], row.original_name || row.stored_name || 'document', { type: row.mime || 'application/octet-stream' });
+  const c = await classify(env, bytes, file);
+  const stored = filename(row.original_name, c.suggested_filename || c.title || row.original_name);
+  const newKey = objectKey(row.id, stored, c.category, c.entity_name);
+
+  if (newKey !== row.r2_key) {
+    await env.FILES.put(newKey, bytes, {
+      httpMetadata: { contentType: row.mime || 'application/octet-stream' },
+      customMetadata: { original_name: safe(row.original_name), uploaded_by: row.created_by }
+    });
+    await env.FILES.delete(row.r2_key);
+  }
+
+  await env.DB.prepare(`
+    UPDATE files SET r2_key=?,stored_name=?,category=?,document_type=?,title=?,summary=?,search_text=?,entity_name=?,document_date=?,expiry_date=?,ai_used=1
+    WHERE id=?`)
+    .bind(
+      newKey, stored, c.category || 'Other', c.document_type || 'Document', c.title || base(row.original_name),
+      c.summary || '', c.search_text || row.search_text || row.original_name, c.entity_name || null,
+      c.document_date || null, c.expiry_date || null, row.id
+    ).run();
+
+  return await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(row.id).first();
+}
+
+async function bootstrap(req, env) {
+  if (!env.SETUP_KEY) return json({ error: 'SETUP_KEY secret is not configured' }, 503);
+  const body = await req.json();
+  if (String(body.setup_key || '') !== String(env.SETUP_KEY)) return json({ error: 'Invalid setup key' }, 403);
+  if (await env.DB.prepare("SELECT id FROM people WHERE role='owner' AND active=1 LIMIT 1").first()) return json({ error: 'Owner access already exists' }, 409);
+  const personId = uid(), t = now(), name = safe(body.name || 'Owner');
+  await env.DB.prepare("INSERT INTO people(id,name,role,active,created_at) VALUES(?,?,'owner',1,?)").bind(personId, name, t).run();
+  const sessionToken = await session(env, personId, body.device_label || 'Owner device');
+  await message(env, { role: 'system', text: `${name} created Private Office.` });
+  return json({ session_token: sessionToken, person: { id: personId, name, role: 'owner' } });
+}
+
+async function acceptInvite(req, env) {
+  const body = await req.json(), h = await hash(body.token || '');
+  const x = await env.DB.prepare(`
+    SELECT i.id,i.person_id,i.expires_at,i.revoked_at,p.name,p.role,p.active
+    FROM invites i JOIN people p ON p.id=i.person_id WHERE i.token_hash=? LIMIT 1`).bind(h).first();
+  if (!x || x.revoked_at || !x.active || (x.expires_at && Date.parse(x.expires_at) <= Date.now())) return json({ error: 'This private link is invalid, expired or revoked' }, 403);
+  const sessionToken = await session(env, x.person_id, body.device_label || 'Private Office device');
+  await env.DB.prepare('UPDATE invites SET use_count=use_count+1 WHERE id=?').bind(x.id).run();
+  return json({ session_token: sessionToken, person: { id: x.person_id, name: x.name, role: x.role } });
+}
+
+async function feed(env, user) {
+  const where = user.role === 'staff' ? 'WHERE (m.person_id=? OR m.visible_to_person_id=?)' : '';
+  const st = env.DB.prepare(`
+    SELECT m.id,m.role,m.text,m.created_at,m.person_id,m.file_id,p.name person_name,
+           f.stored_name,f.original_name,f.mime,f.size,f.category,f.document_type,f.title,f.summary,f.entity_name,f.created_at file_created_at
+    FROM messages m LEFT JOIN people p ON p.id=m.person_id LEFT JOIN files f ON f.id=m.file_id
+    ${where} ORDER BY m.created_at DESC LIMIT 120`);
+  const rows = (user.role === 'staff' ? await st.bind(user.person_id, user.person_id).all() : await st.all()).results || [];
+  return json({ messages: rows.reverse().map(x => ({
+    id: x.id, role: x.role, text: x.text, created_at: x.created_at,
+    person: x.person_name || (x.role === 'assistant' ? 'Private Office' : 'System'),
+    file: x.file_id ? {
+      id: x.file_id, name: x.stored_name, original_name: x.original_name, mime: x.mime, size: x.size,
+      category: x.category, document_type: x.document_type, title: x.title, summary: x.summary,
+      entity_name: x.entity_name, created_at: x.file_created_at
+    } : null
+  })) });
+}
+
+async function send(req, env, user) {
+  const fd = await req.formData();
+  const text = String(fd.get('text') || '').trim().slice(0, 30000);
+  const upload = fd.get('file');
+  if (!text && !(upload instanceof File && upload.size)) return json({ error: 'Write a message or attach a file' }, 400);
+
+  let fileRow = null, fileId = null, duplicate = false;
+
+  if (upload instanceof File && upload.size) {
+    if (upload.size > MAX) return json({ error: 'File is too large. Maximum is 12 MB.' }, 413);
+    const bytes = await upload.arrayBuffer();
+    const sha = await hash(bytes);
+    fileRow = await env.DB.prepare('SELECT * FROM files WHERE sha256=? LIMIT 1').bind(sha).first();
+
+    if (fileRow) {
+      fileId = fileRow.id;
+      duplicate = true;
+      if (Number(fileRow.ai_used) === 0) {
+        try { fileRow = await repairClassification(env, fileRow, bytes); } catch (e) { console.log('classification retry failed', e.message); }
+      }
+    } else {
+      let c;
+      try {
+        c = await classify(env, bytes, upload);
+      } catch (e) {
+        console.log('classification failed', e.message);
+        c = {
+          suggested_filename: upload.name,
+          document_type: upload.type?.startsWith('image/') ? 'Image' : 'Document',
+          category: 'Other',
+          title: base(upload.name),
+          summary: 'Stored safely. AI classification can be retried later.',
+          search_text: `${upload.name} ${text}`,
+          entity_name: null,
+          document_date: null,
+          expiry_date: null
+        };
+      }
+
+      fileId = uid();
+      const stored = filename(upload.name, c.suggested_filename || c.title || upload.name);
+      const key = objectKey(fileId, stored, c.category, c.entity_name);
+      await env.FILES.put(key, bytes, {
+        httpMetadata: { contentType: upload.type || 'application/octet-stream' },
+        customMetadata: { original_name: safe(upload.name), uploaded_by: user.person_id }
+      });
+      const t = now();
+      const searchText = [c.search_text, text].filter(Boolean).join(' ').slice(0, 1600);
+      await env.DB.prepare(`
+        INSERT INTO files(id,r2_key,original_name,stored_name,mime,size,sha256,category,document_type,title,summary,search_text,entity_name,document_date,expiry_date,created_by,created_at,ai_used)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(
+          fileId,key,safe(upload.name),stored,upload.type || 'application/octet-stream',upload.size,sha,
+          c.category || 'Other',c.document_type || 'Document',c.title || base(upload.name),c.summary || '',searchText,
+          c.entity_name || null,c.document_date || null,c.expiry_date || null,user.person_id,t,
+          c.summary?.startsWith('Stored safely') ? 0 : 1
+        ).run();
+      fileRow = await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(fileId).first();
+    }
+  }
+
+  let reply = 'Remembered.';
+  let sourceFileId = null;
+
+  if (fileRow) {
+    reply = duplicate
+      ? `Remembered. This is the same file already stored as “${fileRow.stored_name}”. I linked this new message to it.`
+      : `Remembered. I filed it as “${fileRow.stored_name}” under ${fileRow.category || 'Other'}${fileRow.entity_name ? ` → ${fileRow.entity_name}` : ''}.`;
+  } else if (isQuestion(text)) {
+    let context = await memory(env, user, text);
+
+    if (directLatestFileQuestion(text)) {
+      let latest = context.find(x => x.kind === 'file');
+      if (latest) {
+        if (Number(latest.ai_used) === 0) {
+          try {
+            const full = await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(latest.id).first();
+            const repaired = await repairClassification(env, full);
+            latest = { ...latest, ...repaired, kind: 'file' };
+          } catch (e) { console.log('recent file repair failed', e.message); }
+        }
+        sourceFileId = latest.id;
+        reply = `The last file uploaded was “${latest.stored_name || latest.original_name || latest.title}”${latest.document_type ? ` (${latest.document_type})` : ''}${latest.created_by_name ? `, uploaded by ${latest.created_by_name}` : ''}.`;
+      } else {
+        reply = 'I could not find a recent uploaded file in Private Office.';
+      }
+    } else {
+      reply = await answer(env, text, context);
+      sourceFileId = context.find(x => x.kind === 'file')?.id || null;
+    }
+  }
+
+  const userMessage = await message(env, { personId: user.person_id, role: 'user', text, fileId });
+  await message(env, {
+    role: 'assistant', text: reply,
+    fileId: fileRow ? null : sourceFileId,
+    visibleTo: user.role === 'staff' ? user.person_id : null,
+    replyTo: userMessage.id
+  });
+  return json({ ok: true, reply, file: await fileObj(env, fileRow) });
+}
+
+async function library(env, user, url) {
+  const q = (url.searchParams.get('q') || '').trim(), clauses = [], args = [];
+  if (user.role === 'staff') { clauses.push('created_by=?'); args.push(user.person_id); }
+  if (q) {
+    const x = `%${q}%`;
+    clauses.push('(stored_name LIKE ? OR title LIKE ? OR summary LIKE ? OR entity_name LIKE ? OR category LIKE ?)');
+    args.push(x,x,x,x,x);
+  }
+  let sql = 'SELECT id,original_name,stored_name,mime,size,category,document_type,title,summary,entity_name,created_at,created_by FROM files';
+  if (clauses.length) sql += ' WHERE ' + clauses.join(' AND ');
+  sql += ' ORDER BY created_at DESC LIMIT 150';
+  return json({ files: (await env.DB.prepare(sql).bind(...args).all()).results || [] });
+}
+
+async function download(env, user, id) {
+  const f = await env.DB.prepare('SELECT * FROM files WHERE id=?').bind(id).first();
+  if (!f) return json({ error: 'File not found' }, 404);
+  if (user.role === 'staff' && f.created_by !== user.person_id) return json({ error: 'Not authorized for this file' }, 403);
+  const object = await env.FILES.get(f.r2_key);
+  if (!object) return json({ error: 'Stored object is missing' }, 404);
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('Content-Type', f.mime || headers.get('Content-Type') || 'application/octet-stream');
+  headers.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(f.stored_name)}`);
+  headers.set('Cache-Control', 'private, no-store');
+  return new Response(object.body, { headers });
+}
+
+async function people(env, user) {
+  role(user, ['owner']);
+  const t = now();
+  return json({ people: (await env.DB.prepare(`
+    SELECT p.id,p.name,p.role,p.active,p.created_at,
+      (SELECT COUNT(*) FROM sessions s WHERE s.person_id=p.id AND s.revoked_at IS NULL AND s.expires_at>?) sessions
+    FROM people p ORDER BY p.created_at`).bind(t).all()).results || [] });
+}
+
+async function invite(req, env, user) {
+  role(user, ['owner']);
+  const body = await req.json();
+  const userRole = ['assistant','staff'].includes(body.role) ? body.role : 'staff';
+  const name = safe(body.name || 'Staff'), personId = uid(), inviteId = uid(), raw = token(32), t = now();
+  await env.DB.prepare('INSERT INTO people(id,name,role,active,created_at) VALUES(?,?,?,1,?)').bind(personId,name,userRole,t).run();
+  await env.DB.prepare('INSERT INTO invites(id,person_id,token_hash,created_by,created_at,expires_at) VALUES(?,?,?,?,?,?)')
+    .bind(inviteId,personId,await hash(raw),user.person_id,t,plusDays(Number(body.expires_days || INVITE_DAYS))).run();
+  const appBase = String(env.APP_URL || 'https://kingamada.github.io/private-office/').replace(/\?.*$/, '');
+  return json({ invite: { id: inviteId, person_id: personId, name, role: userRole, url: `${appBase}?invite=${encodeURIComponent(raw)}` } });
+}
+
+async function revoke(req, env, user) {
+  role(user, ['owner']);
+  const body = await req.json(), personId = String(body.person_id || '');
+  if (!personId || personId === user.person_id) return json({ error: 'You cannot revoke your own owner session here' }, 400);
+  const t = now();
+  await env.DB.batch([
+    env.DB.prepare('UPDATE people SET active=0 WHERE id=?').bind(personId),
+    env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL').bind(t,personId),
+    env.DB.prepare('UPDATE invites SET revoked_at=? WHERE person_id=? AND revoked_at IS NULL').bind(t,personId)
+  ]);
+  return json({ ok: true });
+}
+
+async function route(req, env) {
+  await ensure(env);
+  const url = new URL(req.url), path = url.pathname;
+  if (req.method === 'GET' && (path === '/' || path === '/api/health')) return json({ ok: true, service: 'Private Office', storage: !!env.FILES, database: !!env.DB });
+  if (req.method === 'POST' && path === '/api/bootstrap') return bootstrap(req, env);
+  if (req.method === 'POST' && path === '/api/invite/accept') return acceptInvite(req, env);
+
+  const me = await auth(req, env);
+  if (!me) return json({ error: 'Private session required' }, 401);
+  if (req.method === 'GET' && path === '/api/me') return json({ person: { id: me.person_id, name: me.name, role: me.role } });
+  if (req.method === 'GET' && path === '/api/feed') return feed(env, me);
+  if (req.method === 'POST' && path === '/api/message') return send(req, env, me);
+  if (req.method === 'GET' && path === '/api/library') return library(env, me, url);
+  if (req.method === 'GET' && path.startsWith('/api/files/')) return download(env, me, decodeURIComponent(path.slice(11)));
+  if (req.method === 'GET' && path === '/api/people') return people(env, me);
+  if (req.method === 'POST' && path === '/api/invites') return invite(req, env, me);
+  if (req.method === 'POST' && path === '/api/people/revoke') return revoke(req, env, me);
+  if (req.method === 'POST' && path === '/api/logout') {
+    await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE id=?').bind(now(), me.session_id).run();
+    return json({ ok: true });
+  }
+  return json({ error: 'Not found' }, 404);
+}
+
+export default {
+  async fetch(req, env) {
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(req, env) });
+    try { return wrap(await route(req, env), req, env); }
+    catch (e) { return wrap(json({ error: e?.message || 'Private Office error' }, e?.status || 500), req, env); }
+  }
+};
