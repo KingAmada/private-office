@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#f7f7f4">
   <meta name="description" content="Private Office — your documents, properties, companies and credentials, remembered.">
   <title>Private Office</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -63,7 +64,19 @@
 <div id="vaultModal" class="overlay hidden"><div class="modal wide"><div class="modalHead"><div><h2>Private Vault</h2><p>Encrypted in your browser before it ever reaches Drive. Never sent to AI.</p></div><button class="x" data-close="vaultModal">×</button></div><div class="modalBody vaultGrid"><section class="panel"><h3>Unlock vault</h3><label>Master password</label><input id="vaultMaster" type="password" autocomplete="current-password" placeholder="Master password"><div class="buttonRow"><button id="vaultUnlock" class="primary">Unlock</button><button id="vaultCreate" class="ghost">Create new vault</button></div><div id="vaultState" class="micro"></div></section><section class="panel"><h3>Add credential</h3><label>Label</label><input id="vaultLabel" placeholder="Netflix / Work email"><label>Username</label><input id="vaultUsername" placeholder="Optional"><label>Password</label><input id="vaultPassword" type="password" autocomplete="new-password"><label>Website / note</label><input id="vaultUrl" placeholder="Optional"><button id="vaultSave" class="primary full">Encrypt & save</button></section><section class="panel span2"><div class="sectionHead"><b>Stored credentials</b><button id="vaultLock">Lock</button></div><div id="vaultItems"></div></section></div></div></div>
 <div id="toast" class="toast"></div>
 <script src="config.js"></script>
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+  window.__poEnableFedCM = function () {
+    if (!window.google?.accounts?.id?.initialize) return;
+    const identity = google.accounts.id;
+    if (identity.__privateOfficeFedCMPatched) return;
+    const originalInitialize = identity.initialize.bind(identity);
+    identity.initialize = function (options) {
+      return originalInitialize({ ...options, use_fedcm_for_button: true });
+    };
+    identity.__privateOfficeFedCMPatched = true;
+  };
+</script>
+<script src="https://accounts.google.com/gsi/client" async defer onload="window.__poEnableFedCM && window.__poEnableFedCM()"></script>
 <script src="app.js"></script>
 </body>
 </html>
