@@ -1,13 +1,17 @@
-# Private Office AI Gateway
+# Private Office Worker
 
-This folder contains the only secret-bearing component of Private Office. It is a tiny serverless Worker, not a Node/Express backend.
+This Worker is the private API for the GitHub Pages PWA.
 
-Required Worker secrets/variables:
+Bindings are declared in `../wrangler.jsonc`:
 
-- `OPENAI_API_KEY` — secret
-- `GOOGLE_CLIENT_ID` — same public Web Client ID used by the frontend
-- `ALLOWED_EMAILS` — comma-separated Google accounts allowed to use the gateway
-- `APP_ORIGINS` — comma-separated allowed frontend origins, e.g. `https://kingamada.github.io`
-- `OPENAI_MODEL` — optional; defaults to `gpt-5.6-luna`
+- `DB` → D1 `private-office-db`
+- `FILES` → R2 `private-office`
 
-The Worker validates Google ID token signatures using Google's current public JWKS before accepting requests.
+Runtime secrets:
+
+- `OPENAI_API_KEY` — OpenAI API key
+- `SETUP_KEY` — temporary one-time owner bootstrap key
+
+The Worker automatically initializes its D1 tables on first request. R2 public access should stay disabled.
+
+Users authenticate with Private Office invitation/device-session tokens, not Google OAuth.
