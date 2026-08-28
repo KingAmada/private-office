@@ -53,9 +53,7 @@ function bytesToBase64(bytes) {
   const a = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = '';
   const chunk = 0x8000;
-  for (let i = 0; i < a.length; i += chunk) {
-    binary += String.fromCharCode(...a.subarray(i, i + chunk));
-  }
+  for (let i = 0; i < a.length; i += chunk) binary += String.fromCharCode(...a.subarray(i, i + chunk));
   return btoa(binary);
 }
 
@@ -63,14 +61,19 @@ function responseRequest(env, content) {
   return {
     model: env.OPENAI_MODEL || 'gpt-5.6-luna',
     store: false,
-    prompt_cache_key: 'private-office-file-v3',
+    prompt_cache_key: 'private-office-file-v4',
     reasoning: { effort: 'none' },
     max_output_tokens: 480,
     instructions:
-      'Read this private-office item once and create compact filing memory. Be terse. ' +
-      'Suggested filename must be human-readable and never contain passwords, PINs, CVVs, OTPs, ' +
-      'recovery/seed phrases, private keys or authentication secrets. Summary max 28 words; ' +
-      'search_text max 60 words. Use visible text when present. Do not invent names, dates, ownership or entities.',
+      'Read this private-office item once and create compact filing memory. Be terse and conservative. ' +
+      'Choose the most useful category for a private office: Properties for land, houses, title documents, allocations, leases and property transactions; ' +
+      'Companies when the document is primarily about a named company, its corporate records, contracts, registrations or company-specific affairs; ' +
+      'Banking for statements, bank correspondence and account records; Legal for agreements, court/legal documents and general legal instruments; ' +
+      'Operations for procurement, quotations, supplier/product listings, inventory, stock, equipment, office administration and operating records; ' +
+      'Vehicles for vehicle papers; Insurance for policies/claims; Investments for investment records; Taxes for tax records; Personal for personal identity/life records. ' +
+      'Use Other only when none of those reasonably fit. entity_name should be the strongest supported folder entity: a company name, property/location name, vehicle, project or person when clearly evidenced. ' +
+      'Suggested filename must be concise, human-readable and descriptive. Never put passwords, PINs, CVVs, OTPs, recovery/seed phrases, private keys or authentication secrets in filenames or summaries. ' +
+      'Summary max 28 words; search_text max 60 words. Use visible text when present. Do not invent names, dates, ownership or entities.',
     input: [{ role: 'user', content }],
     text: {
       format: { type: 'json_schema', name: 'private_office_file', strict: true, schema },
@@ -81,26 +84,14 @@ function responseRequest(env, content) {
 
 export async function classify(env, bytes, file) {
   if (!env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not configured');
-
   const name = file.name || 'document';
   const mime = file.type || 'application/octet-stream';
-  const intro = {
-    type: 'input_text',
-    text: `Original filename: ${name}\nMIME: ${mime}\nReturn structured classification only.`
-  };
+  const intro = { type: 'input_text', text: `Original filename: ${name}\nMIME: ${mime}\nReturn structured classification only.` };
 
   if (mime.startsWith('image/')) {
-    const image = {
-      type: 'input_image',
-      image_url: `data:${mime};base64,${bytesToBase64(bytes)}`,
-      detail: 'low'
-    };
+    const image = { type: 'input_image', image_url: `data:${mime};base64,${bytesToBase64(bytes)}`, detail: 'low' };
     const req = responseRequest(env, [intro, image]);
-    const d = await (await call('/responses', env, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req)
-    })).json();
+    const d = await (await call('/responses', env, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })).json();
     return JSON.parse(outputText(d));
   }
 
@@ -108,17 +99,9 @@ export async function classify(env, bytes, file) {
   fd.append('purpose', 'user_data');
   fd.append('file', new File([bytes], name, { type: mime }));
   const up = await (await call('/files', env, { method: 'POST', body: fd })).json();
-
   try {
-    const req = responseRequest(env, [
-      intro,
-      { type: 'input_file', file_id: up.id }
-    ]);
-    const d = await (await call('/responses', env, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req)
-    })).json();
+    const req = responseRequest(env, [intro, { type: 'input_file', file_id: up.id }]);
+    const d = await (await call('/responses', env, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })).json();
     return JSON.parse(outputText(d));
   } finally {
     try { await call(`/files/${encodeURIComponent(up.id)}`, env, { method: 'DELETE' }); } catch {}
@@ -141,10 +124,6 @@ export async function answer(env, question, context) {
     input: `QUESTION:\n${String(question).slice(0,2500)}\n\nPRIVATE MEMORY:\n${JSON.stringify(context).slice(0,22000)}`,
     text: { verbosity: 'low' }
   };
-  const d = await (await call('/responses', env, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req)
-  })).json();
+  const d = await (await call('/responses', env, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req) })).json();
   return outputText(d) || 'I could not find a supported answer.';
 }
