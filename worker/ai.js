@@ -89,8 +89,6 @@ export async function classify(env, bytes, file) {
     text: `Original filename: ${name}\nMIME: ${mime}\nReturn structured classification only.`
   };
 
-  // Images use the Responses API's image input directly. This is both more reliable
-  // for screenshots/photos and avoids creating a temporary OpenAI File object.
   if (mime.startsWith('image/')) {
     const image = {
       type: 'input_image',
@@ -106,7 +104,6 @@ export async function classify(env, bytes, file) {
     return JSON.parse(outputText(d));
   }
 
-  // PDFs, DOCX, text files and other documents use temporary file input.
   const fd = new FormData();
   fd.append('purpose', 'user_data');
   fd.append('file', new File([bytes], name, { type: mime }));
@@ -133,14 +130,14 @@ export async function answer(env, question, context) {
   const req = {
     model: env.OPENAI_MODEL || 'gpt-5.6-luna',
     store: false,
-    prompt_cache_key: 'private-office-chat-v6',
+    prompt_cache_key: 'private-office-chat-v7',
     reasoning: { effort: 'none' },
     max_output_tokens: 520,
     instructions:
       'You are Private Office, a concise personal chief of staff. Answer only from the supplied private memory. ' +
       'Treat created_at timestamps and ordering as authoritative for words such as latest, last, recently and today. ' +
-      'If unsupported, say so. Mention useful names/dates. Never reveal or infer passwords, PINs, CVVs, OTPs, ' +
-      'recovery/seed phrases or private keys.',
+      'If unsupported, say so. Mention useful names/dates. Return plain text only: no Markdown, no asterisks, no headings, no bullet syntax. ' +
+      'Never reveal or infer passwords, PINs, CVVs, OTPs, recovery/seed phrases or private keys.',
     input: `QUESTION:\n${String(question).slice(0,2500)}\n\nPRIVATE MEMORY:\n${JSON.stringify(context).slice(0,22000)}`,
     text: { verbosity: 'low' }
   };
