@@ -7,6 +7,11 @@ window.PRIVATE_OFFICE_CONFIG = {
 };
 
 window.addEventListener('DOMContentLoaded', () => {
+  const polish = document.createElement('link');
+  polish.rel = 'stylesheet';
+  polish.href = './ui-polish.css?v=1';
+  document.head.appendChild(polish);
+
   const s = document.createElement('script');
   s.src = './file-controls.js?v=2';
   document.body.appendChild(s);
