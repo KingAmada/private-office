@@ -5,8 +5,8 @@
   "compatibility_date": "2026-08-28",
   "keep_vars": true,
   "vars": {
-    "APP_ORIGINS": "https://kingamada.github.io",
-    "APP_URL": "https://kingamada.github.io/private-office/",
+    "APP_ORIGINS": "https://private-office.pages.dev,https://kingamada.github.io",
+    "APP_URL": "https://private-office.pages.dev/",
     "OPENAI_MODEL": "gpt-5.6-luna"
   },
   "secrets": {
